@@ -25,12 +25,15 @@ export const config = {
 
   clientOrigins: (process.env.CLIENT_ORIGINS || '*').split(',').map((s) => s.trim()),
 
-  spaces: {
-    key: process.env.SPACES_KEY || '',
-    secret: process.env.SPACES_SECRET || '',
-    region: process.env.SPACES_REGION || 'fra1',
-    bucket: process.env.SPACES_BUCKET || 'localpulse',
-    endpoint: process.env.SPACES_ENDPOINT || `https://${process.env.SPACES_REGION || 'fra1'}.digitaloceanspaces.com`,
+  // Public base URL of this server (used to build local upload URLs in dev).
+  // Set to your LAN IP or deployed URL so devices can load the images.
+  publicUrl: process.env.PUBLIC_URL || '',
+
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
+    apiKey: process.env.CLOUDINARY_API_KEY || '',
+    apiSecret: process.env.CLOUDINARY_API_SECRET || '',
+    folder: process.env.CLOUDINARY_FOLDER || 'nearby',
   },
 
   rateLimit: {

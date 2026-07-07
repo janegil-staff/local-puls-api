@@ -1,5 +1,5 @@
 // localpulse/server/src/controllers/uploadController.js
-import { uploadImage } from '../lib/spaces.js';
+import { uploadImage } from '../lib/cloudinary.js';
 
 // Expects multer to have put the file on req.file (memory storage).
 export async function uploadImageHandler(req, res) {
