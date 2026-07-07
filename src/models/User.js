@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema(
     username: { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 24 },
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
+    pinHash: { type: String }, // optional 4-6 digit PIN, hashed
     displayName: { type: String, trim: true, maxlength: 40 },
     bio: { type: String, maxlength: 300, default: '' },
 
@@ -58,6 +59,13 @@ userSchema.methods.setPassword = async function setPassword(plain) {
 };
 userSchema.methods.checkPassword = function checkPassword(plain) {
   return bcrypt.compare(plain, this.passwordHash);
+};
+userSchema.methods.setPin = async function setPin(plain) {
+  this.pinHash = await bcrypt.hash(String(plain), 10);
+};
+userSchema.methods.checkPin = function checkPin(plain) {
+  if (!this.pinHash) return Promise.resolve(false);
+  return bcrypt.compare(String(plain), this.pinHash);
 };
 
 userSchema.virtual('age').get(function age() {

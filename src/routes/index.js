@@ -37,7 +37,6 @@ router.post(
   authLimiter,
   validate({
     body: {
-      username: { required: true, type: 'string', min: 3, max: 24 },
       email: { required: true, type: 'string', isEmail: true },
       password: { required: true, type: 'string', min: 6 },
     },

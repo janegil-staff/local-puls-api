@@ -4,12 +4,30 @@ import { signToken } from '../middleware/auth.js';
 
 export async function register(req, res) {
   try {
-    const { username, email, password, displayName } = req.body;
-    if (!username || !email || !password) {
-      return res.status(400).json({ error: 'username, email and password are required' });
+    const { email, password, pin, displayName } = req.body;
+    let { username } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'email and password are required' });
     }
     if (password.length < 6) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+    if (pin != null && !/^\d{4,6}$/.test(String(pin))) {
+      return res.status(400).json({ error: 'PIN must be 4 to 6 digits' });
+    }
+
+    // If no username supplied (new signup flow uses email only), derive a unique
+    // one from the email local-part.
+    if (!username) {
+      const base = String(email).split('@')[0].replace(/[^a-zA-Z0-9_]/g, '').slice(0, 20) || 'user';
+      username = base;
+      let n = 0;
+      // Ensure uniqueness.
+      while (await User.exists({ username })) {
+        n += 1;
+        username = `${base}${n}`;
+      }
     }
 
     const exists = await User.findOne({ $or: [{ email: email.toLowerCase() }, { username }] });
@@ -17,6 +35,7 @@ export async function register(req, res) {
 
     const user = new User({ username, email, displayName: displayName || username });
     await user.setPassword(password);
+    if (pin != null) await user.setPin(pin);
     await user.save();
 
     const token = signToken(user._id);
@@ -38,7 +57,10 @@ export async function login(req, res) {
     });
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
-    const ok = await user.checkPassword(password);
+    // The credential may be the password OR the PIN (app-lock login sends the
+    // PIN here). Accept either.
+    let ok = await user.checkPassword(password);
+    if (!ok) ok = await user.checkPin(password);
     if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
     const token = signToken(user._id);
