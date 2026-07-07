@@ -1,69 +1,56 @@
 // localpulse/server/src/lib/seed.js
-// Populate a dev database with users + Bergen-area posts so the feed isn't empty.
+// Seed dating profiles around Bergen so discovery has candidates.
 // Run: npm run seed
 import mongoose from 'mongoose';
+import { config } from '../config/index.js';
 import User from '../models/User.js';
-import Post from '../models/Post.js';
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/localpulse';
-
-// Bergen center-ish, with small offsets so "near me" has spread.
 const BERGEN = { lng: 5.3221, lat: 60.3913 };
 function near() {
-  return {
-    lng: BERGEN.lng + (Math.random() - 0.5) * 0.05,
-    lat: BERGEN.lat + (Math.random() - 0.5) * 0.05,
-  };
+  return [BERGEN.lng + (Math.random() - 0.5) * 0.08, BERGEN.lat + (Math.random() - 0.5) * 0.08];
+}
+function dobForAge(age) {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - age);
+  return d;
 }
 
-const SAMPLE = [
-  { type: 'event', text: 'Fish market gathering Saturday morning — fresh catch and live music!', placeName: 'Torget' },
-  { type: 'recommendation', text: 'The new coffee spot in Nordnes has the best cardamom buns in town.', placeName: 'Nordnes' },
-  { type: 'lostfound', text: 'Found a set of keys near Fløibanen station. DM to claim.', placeName: 'Fløyen' },
-  { type: 'marketplace', text: 'Selling a barely-used kayak, perfect for the fjords. 3000 kr.', placeName: 'Sandviken' },
-  { type: 'question', text: 'Anyone know a good electrician in the Bergenhus area?', placeName: 'Bergenhus' },
-  { type: 'update', text: 'Beautiful clear day over the seven mountains today ☀️', placeName: 'Ulriken' },
+const PEOPLE = [
+  { username: 'ingrid', displayName: 'Ingrid', gender: 'woman', age: 28, neighborhood: 'Nordnes', interests: ['hiking', 'coffee', 'photography'], bio: 'Fjord swimmer and cinnamon-bun enthusiast.' },
+  { username: 'lars', displayName: 'Lars', gender: 'man', age: 31, neighborhood: 'Sandviken', interests: ['climbing', 'vinyl', 'cooking'], bio: 'Weekends on Ulriken, weeknights at the record shop.' },
+  { username: 'sofie', displayName: 'Sofie', gender: 'woman', age: 26, neighborhood: 'Møhlenpris', interests: ['art', 'cycling', 'jazz'], bio: 'Painter. Will show you the best kaffebar in town.' },
+  { username: 'mateo', displayName: 'Mateo', gender: 'man', age: 29, neighborhood: 'Bergenhus', interests: ['running', 'films', 'travel'], bio: 'New to Bergen, learning Norwegian one word at a time.' },
+  { username: 'kari', displayName: 'Kari', gender: 'nonbinary', age: 27, neighborhood: 'Landås', interests: ['boardgames', 'baking', 'kayaking'], bio: 'Board game night is non-negotiable.' },
+  { username: 'admin', displayName: 'Admin', gender: 'other', age: 35, neighborhood: '', interests: [], bio: '', role: 'admin' },
 ];
 
 async function run() {
-  await mongoose.connect(MONGO_URI);
-  console.log('Connected. Seeding…');
+  await mongoose.connect(config.mongoUri);
+  console.log('Connected. Seeding dating profiles…');
+  await User.deleteMany({});
 
-  await Promise.all([User.deleteMany({}), Post.deleteMany({})]);
-
-  const usersData = [
-    { username: 'ingrid', email: 'ingrid@example.com', displayName: 'Ingrid H.' },
-    { username: 'lars', email: 'lars@example.com', displayName: 'Lars B.' },
-    { username: 'admin', email: 'admin@example.com', displayName: 'Admin', role: 'admin' },
-  ];
-
-  const users = [];
-  for (const u of usersData) {
-    const user = new User(u);
-    await user.setPassword('password123');
-    await user.save();
-    users.push(user);
-  }
-
-  for (let i = 0; i < SAMPLE.length; i++) {
-    const s = SAMPLE[i];
-    const author = users[i % users.length];
-    const { lng, lat } = near();
-    await Post.create({
-      author: author._id,
-      type: s.type,
-      text: s.text,
-      placeName: s.placeName,
-      location: { type: 'Point', coordinates: [lng, lat] },
+  for (const p of PEOPLE) {
+    const u = new User({
+      username: p.username,
+      email: `${p.username}@example.com`,
+      displayName: p.displayName,
+      gender: p.gender,
+      dob: dobForAge(p.age),
+      bio: p.bio,
+      neighborhood: p.neighborhood,
+      interests: p.interests,
+      photos: p.username === 'admin' ? [] : [`https://picsum.photos/seed/${p.username}/600/800`],
+      role: p.role || 'user',
+      profileComplete: p.username !== 'admin',
+      location: { type: 'Point', coordinates: near() },
+      preferences: { show: 'everyone', ageMin: 18, ageMax: 99, maxDistanceKm: 50 },
     });
+    await u.setPassword('password123');
+    await u.save();
   }
 
-  console.log(`Seeded ${users.length} users and ${SAMPLE.length} posts.`);
-  console.log('Login with any of: ingrid / lars / admin  (password: password123)');
+  console.log(`Seeded ${PEOPLE.length} users. Login: ingrid / lars / sofie / admin (password: password123)`);
   await mongoose.disconnect();
 }
 
-run().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+run().catch((e) => { console.error(e); process.exit(1); });

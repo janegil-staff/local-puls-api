@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import { config } from '../config/index.js';
+import { canAccessConversation } from '../lib/matchGuard.js';
 
 // Authenticate the socket from the JWT passed in handshake auth.
 function authSocket(socket, next) {
@@ -43,6 +44,10 @@ export function registerChat(io) {
         if (!convo || !convo.participants.some((p) => String(p) === String(socket.userId))) {
           return ack?.({ error: 'Not a participant' });
         }
+
+        // Chat is gated behind an active match — revoked on unmatch.
+        const allowed = await canAccessConversation(socket.userId, conversationId);
+        if (!allowed) return ack?.({ error: 'You are no longer matched' });
 
         const message = await Message.create({
           conversation: conversationId,

@@ -1,15 +1,17 @@
 // localpulse/server/src/routes/index.js
 import { Router } from 'express';
 import multer from 'multer';
-import { register, login, me } from '../controllers/authController.js';
+import { register, login } from '../controllers/authController.js';
+import {
+  getMe, updateProfile, updatePreferences, updateLocation, deleteAccount,
+} from '../controllers/profileController.js';
+import { getDeck } from '../controllers/discoveryController.js';
+import { swipe, listMatches, unmatch } from '../controllers/matchController.js';
 import { createPost, getFeed, toggleLike } from '../controllers/postController.js';
 import { listComments, addComment, deleteComment } from '../controllers/commentController.js';
-import {
-  getProfile, follow, unfollow, followingFeed, updateProfile,
-} from '../controllers/userController.js';
-import {
-  listConversations, openConversation, getMessages,
-} from '../controllers/chatController.js';
+import { getProfile, follow, unfollow, followingFeed } from '../controllers/userController.js';
+import { toggleSave, listSaved } from '../controllers/savedController.js';
+import { listConversations, getMessages } from '../controllers/chatController.js';
 import { uploadImageHandler } from '../controllers/uploadController.js';
 import {
   listNotifications, unreadCount, markAllRead, registerPushToken, removePushToken,
@@ -17,10 +19,9 @@ import {
 import {
   reportPost, reportUser, blockUser, unblockUser, listBlocked,
 } from '../controllers/moderationController.js';
-import { toggleSave, listSaved } from '../controllers/savedController.js';
 import {
-  stats, listUsers, setBanned, listPosts as adminListPosts, deletePost as adminDeletePost,
-  listReports, resolveReport,
+  stats, listUsers, setBanned, listReports, resolveReport,
+  listPosts as adminListPosts, deletePost as adminDeletePost,
 } from '../controllers/adminController.js';
 import { requireAuth, optionalAuth } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
@@ -30,7 +31,7 @@ import { authLimiter } from '../middleware/rateLimit.js';
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
 
-// ── Auth (rate-limited) ───────────────────────────────
+// ── Auth ──────────────────────────────────────────────
 router.post(
   '/auth/register',
   authLimiter,
@@ -49,9 +50,21 @@ router.post(
   validate({ body: { emailOrUsername: { required: true }, password: { required: true } } }),
   login
 );
-router.get('/auth/me', requireAuth, me);
 
-// ── Posts ─────────────────────────────────────────────
+// ── Profile / preferences / account ───────────────────
+router.get('/me', requireAuth, getMe);
+router.patch('/me', requireAuth, updateProfile);
+router.patch('/me/preferences', requireAuth, updatePreferences);
+router.patch('/me/location', requireAuth, updateLocation);
+router.delete('/me', requireAuth, deleteAccount); // App Store 5.1.1
+
+// ── Discovery + matching ──────────────────────────────
+router.get('/discovery', requireAuth, getDeck);
+router.post('/swipe/:userId', requireAuth, swipe);
+router.get('/matches', requireAuth, listMatches);
+router.delete('/matches/:id', requireAuth, unmatch);
+
+// ── Feed / posts (public social side) ─────────────────
 router.post(
   '/posts',
   requireAuth,
@@ -74,15 +87,13 @@ router.post(
 );
 router.delete('/comments/:id', requireAuth, deleteComment);
 
-// ── Users / social graph ──────────────────────────────
+// ── Public user profile + social graph ────────────────
 router.get('/users/:username', optionalAuth, getProfile);
-router.patch('/users/me', requireAuth, updateProfile);
 router.post('/users/:id/follow', requireAuth, follow);
 router.delete('/users/:id/follow', requireAuth, unfollow);
 
-// ── Chat ──────────────────────────────────────────────
+// ── Chat (gated behind active match) ──────────────────
 router.get('/chat/conversations', requireAuth, listConversations);
-router.post('/chat/conversations/:userId', requireAuth, openConversation);
 router.get('/chat/conversations/:id/messages', requireAuth, getMessages);
 
 // ── Notifications + push ──────────────────────────────

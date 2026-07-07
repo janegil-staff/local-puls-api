@@ -1,8 +1,8 @@
 // localpulse/server/src/controllers/moderationController.js
 import Report, { REPORT_REASONS } from '../models/Report.js';
 import Block from '../models/Block.js';
-import Post from '../models/Post.js';
 import User from '../models/User.js';
+import Post from '../models/Post.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/ApiError.js';
 

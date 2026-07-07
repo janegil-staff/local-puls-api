@@ -1,7 +1,7 @@
 // localpulse/server/src/models/Notification.js
 import mongoose from 'mongoose';
 
-export const NOTIF_TYPES = ['like', 'comment', 'follow', 'message'];
+export const NOTIF_TYPES = ['like', 'comment', 'follow', 'message', 'match'];
 
 const notificationSchema = new mongoose.Schema(
   {
