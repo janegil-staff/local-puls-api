@@ -4,26 +4,34 @@ import { signToken } from '../middleware/auth.js';
 
 export async function register(req, res) {
   try {
-    const { email, password, pin, displayName } = req.body;
+    const { email, password, pin, displayName, dob, gender } = req.body;
     let { username } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'email and password are required' });
+    if (!email) {
+      return res.status(400).json({ error: 'email is required' });
     }
-    if (password.length < 6) {
+    if (!password && !pin) {
+      return res.status(400).json({ error: 'A password or PIN is required' });
+    }
+    if (password && password.length < 6) {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
     if (pin != null && !/^\d{4,6}$/.test(String(pin))) {
       return res.status(400).json({ error: 'PIN must be 4 to 6 digits' });
     }
 
-    // If no username supplied (new signup flow uses email only), derive a unique
-    // one from the email local-part.
-    if (!username) {
-      const base = String(email).split('@')[0].replace(/[^a-zA-Z0-9_]/g, '').slice(0, 20) || 'user';
+    // A username may now be supplied by the signup flow; validate it. If none,
+    // derive a unique one from the email local-part (padded to the 3-char min).
+    if (username != null) {
+      username = String(username).trim();
+      if (username.length < 3 || username.length > 24) {
+        return res.status(400).json({ error: 'Username must be 3 to 24 characters' });
+      }
+    } else {
+      let base = String(email).split('@')[0].replace(/[^a-zA-Z0-9_]/g, '').slice(0, 20) || 'user';
+      while (base.length < 3) base += Math.floor(Math.random() * 10);
       username = base;
       let n = 0;
-      // Ensure uniqueness.
       while (await User.exists({ username })) {
         n += 1;
         username = `${base}${n}`;
@@ -34,7 +42,11 @@ export async function register(req, res) {
     if (exists) return res.status(409).json({ error: 'Username or email already in use' });
 
     const user = new User({ username, email, displayName: displayName || username });
-    await user.setPassword(password);
+    if (dob) user.dob = dob;
+    if (gender) user.gender = gender;
+    // passwordHash is required; when there's no password, use the PIN as the
+    // login credential (login already accepts either password or PIN).
+    await user.setPassword(password || String(pin));
     if (pin != null) await user.setPin(pin);
     await user.save();
 

@@ -38,7 +38,6 @@ router.post(
   validate({
     body: {
       email: { required: true, type: 'string', isEmail: true },
-      password: { required: true, type: 'string', min: 6 },
     },
   }),
   register
