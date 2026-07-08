@@ -34,7 +34,7 @@ export async function listConversations(req, res) {
   try {
     const convos = await Conversation.find({
       participants: req.userId,
-      status: 'accepted',
+      status: { $ne: 'pending' },
     })
       .sort({ lastMessageAt: -1 })
       .populate('participants');
@@ -61,7 +61,7 @@ export async function chatUnreadCount(req, res) {
   try {
     const convos = await Conversation.find({
       participants: req.userId,
-      status: 'accepted',
+      status: { $ne: 'pending' },
     }).select('_id');
     const ids = convos.map((c) => c._id);
     const count = await Message.countDocuments({

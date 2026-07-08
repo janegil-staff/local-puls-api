@@ -93,7 +93,12 @@ router.delete('/users/:id/follow', requireAuth, unfollow);
 
 // ── Chat (gated behind active match) ──────────────────
 router.get('/chat/conversations', requireAuth, listConversations);
+router.get('/chat/requests', requireAuth, listRequests);
+router.post('/chat/conversations/:userId', requireAuth, openConversation);
+router.post('/chat/conversations/:id/accept', requireAuth, acceptConversation);
 router.get('/chat/conversations/:id/messages', requireAuth, getMessages);
+router.get('/chat/unread-count', requireAuth, chatUnreadCount);
+router.post('/chat/conversations/:id/read', requireAuth, markRead);
 
 // ── Notifications + push ──────────────────────────────
 router.get('/notifications', requireAuth, listNotifications);
