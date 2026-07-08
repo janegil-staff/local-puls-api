@@ -22,6 +22,7 @@ const userSchema = new mongoose.Schema(
     pinHash: { type: String }, // optional 4-6 digit PIN, hashed
     displayName: { type: String, trim: true, maxlength: 40 },
     bio: { type: String, maxlength: 300, default: '' },
+    language: { type: String, default: 'en' }, // UI language: no/en/nl/fr/de/it/sv/da/fi/es/pl/pt
 
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     banned: { type: Boolean, default: false },
@@ -45,7 +46,6 @@ const userSchema = new mongoose.Schema(
     // Whether onboarding is complete enough to appear in discovery.
     profileComplete: { type: Boolean, default: false },
 
-    language: { type: String, default: "en" },
     // Presence: updated on socket connect / heartbeat. "online" is derived.
     lastSeenAt: { type: Date, default: Date.now },
 
@@ -119,6 +119,7 @@ userSchema.methods.toSelf = function toSelf() {
     email: this.email,
     displayName: this.displayName || this.username,
     bio: this.bio,
+    language: this.language || 'no',
     dob: this.dob,
     age: ageFromDob(this.dob),
     gender: this.gender,
