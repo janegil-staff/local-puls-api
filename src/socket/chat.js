@@ -2,8 +2,8 @@
 import jwt from 'jsonwebtoken';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
+import Block from '../models/Block.js';
 import { config } from '../config/index.js';
-import { canAccessConversation } from '../lib/matchGuard.js';
 
 // Authenticate the socket from the JWT passed in handshake auth.
 function authSocket(socket, next) {
@@ -16,6 +16,17 @@ function authSocket(socket, next) {
   } catch {
     next(new Error('Invalid token'));
   }
+}
+
+// Is there a block in either direction between two users?
+async function blockedBetween(a, b) {
+  const block = await Block.findOne({
+    $or: [
+      { blocker: a, blocked: b },
+      { blocker: b, blocked: a },
+    ],
+  });
+  return Boolean(block);
 }
 
 export function registerChat(io) {
@@ -45,9 +56,13 @@ export function registerChat(io) {
           return ack?.({ error: 'Not a participant' });
         }
 
-        // Chat is gated behind an active match — revoked on unmatch.
-        const allowed = await canAccessConversation(socket.userId, conversationId);
-        if (!allowed) return ack?.({ error: 'You are no longer matched' });
+        // Open messaging: anyone can message anyone UNLESS a block exists.
+        // (Pending conversations are allowed — the initiator's messages land in
+        // the recipient's Requests until they accept.)
+        const other = convo.participants.find((p) => String(p) !== String(socket.userId));
+        if (other && (await blockedBetween(socket.userId, other))) {
+          return ack?.({ error: 'You cannot message this user' });
+        }
 
         const message = await Message.create({
           conversation: conversationId,
@@ -65,9 +80,18 @@ export function registerChat(io) {
         io.to(`convo:${conversationId}`).emit('chat:message', payload);
 
         // Notify participants not currently in the room (badge/notification).
+        // Include the conversation status so the client can route the ping to
+        // Messages vs Requests.
         convo.participants
           .filter((p) => String(p) !== String(socket.userId))
-          .forEach((p) => io.to(`user:${p}`).emit('chat:notify', { conversationId, preview: t }));
+          .forEach((p) =>
+            io.to(`user:${p}`).emit('chat:notify', {
+              conversationId,
+              preview: t,
+              status: convo.status,
+              pending: convo.status === 'pending',
+            })
+          );
 
         ack?.({ ok: true, message: payload });
       } catch (err) {

@@ -28,7 +28,7 @@ export const getMe = asyncHandler(async (req, res) => {
 });
 // Update dating profile. Enforces the 18+ age gate on DOB.
 export const updateProfile = asyncHandler(async (req, res) => {
-  const { displayName, bio, dob, gender, photos, interests, neighborhood, email, pin } = req.body;
+  const { displayName, bio, dob, gender, photos, interests, neighborhood, email, pin, username } = req.body;
   const user = await User.findById(req.userId);
   if (!user) throw ApiError.notFound('User not found');
 
@@ -51,6 +51,17 @@ export const updateProfile = asyncHandler(async (req, res) => {
   if (interests !== undefined) user.interests = (interests || []).slice(0, 10);
   if (neighborhood !== undefined) user.neighborhood = neighborhood;
 
+  // Username: a login identifier, so check uniqueness (no PIN needed).
+  if (username !== undefined && username !== user.username) {
+    const uname = String(username).trim();
+    if (uname.length < 3 || uname.length > 24) {
+      throw ApiError.badRequest('Username must be 3 to 24 characters');
+    }
+    const taken = await User.findOne({ username: uname, _id: { $ne: user._id } });
+    if (taken) throw ApiError.badRequest('Username already in use');
+    user.username = uname;
+  }
+
   // Email is a login credential — require the PIN and check uniqueness.
   if (email !== undefined && email !== user.email) {
     const normalized = String(email).toLowerCase().trim();
@@ -58,7 +69,7 @@ export const updateProfile = asyncHandler(async (req, res) => {
       throw ApiError.badRequest('Invalid email');
     }
     const ok = await user.checkPin(String(pin || ''));
-    if (!ok) throw ApiError.unauthorized ? ApiError.unauthorized('Incorrect PIN') : ApiError.badRequest('Incorrect PIN');
+    if (!ok) throw ApiError.badRequest('Incorrect PIN');
     const taken = await User.findOne({ email: normalized, _id: { $ne: user._id } });
     if (taken) throw ApiError.badRequest('Email already in use');
     user.email = normalized;
