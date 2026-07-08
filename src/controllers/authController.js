@@ -4,20 +4,20 @@ import { signToken } from '../middleware/auth.js';
 
 export async function register(req, res) {
   try {
-    const { email, password, pin, displayName, dob, gender } = req.body;
+    const { email, pin, displayName, dob, gender } = req.body;
     let { username } = req.body;
 
     if (!email) {
       return res.status(400).json({ error: 'email is required' });
     }
-    if (!password && !pin) {
-      return res.status(400).json({ error: 'A password or PIN is required' });
+    if (!pin) {
+      return res.status(400).json({ error: 'A PIN is required' });
     }
-    if (password && password.length !== 4) {
+    if (pin && pin.length !== 4) {
       return res.status(400).json({ error: 'Password must be at 4 characters' });
     }
     if (pin != null && !/^\d{4,6}$/.test(String(pin))) {
-      return res.status(400).json({ error: 'PIN must be 4 to 6 digits' });
+      return res.status(400).json({ error: 'PIN must be 4 digits' });
     }
 
     // A username may now be supplied by the signup flow; validate it. If none,
@@ -46,7 +46,8 @@ export async function register(req, res) {
     if (gender) user.gender = gender;
     // passwordHash is required; when there's no password, use the PIN as the
     // login credential (login already accepts either password or PIN).
-    await user.setPassword(password || String(pin));
+    await user.setPin(String(pin));
+    await user.setPassword(String(pin));
     if (pin != null) await user.setPin(pin);
     await user.save();
 

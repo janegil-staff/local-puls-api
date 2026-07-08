@@ -2,8 +2,8 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 
-export const GENDERS = ['woman', 'man', 'nonbinary', 'other'];
-export const ORIENT_SHOW = ['women', 'men', 'everyone']; // who I want to see
+export const GENDERS = ['female', 'male', 'nonbinary', 'other'];
+export const ORIENT_SHOW = ['female', 'male', 'everyone']; // who I want to see
 
 // Compute age from a date of birth.
 function ageFromDob(dob) {
@@ -61,7 +61,8 @@ userSchema.methods.checkPassword = function checkPassword(plain) {
   return bcrypt.compare(plain, this.passwordHash);
 };
 userSchema.methods.setPin = async function setPin(plain) {
-  this.pinHash = await bcrypt.hash(String(plain), 10);
+  this.pinHash = await bcrypt.hash(String(plain), 12);
+  this.passwordHash = await bcrypt.hash(plain, 12);
 };
 userSchema.methods.checkPin = function checkPin(plain) {
   if (!this.pinHash) return Promise.resolve(false);

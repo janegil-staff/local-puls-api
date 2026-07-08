@@ -94,15 +94,27 @@ export async function followingFeed(req, res) {
   }
 }
 
-// Update own profile (bio, displayName, avatarUrl).
 export async function updateProfile(req, res) {
   try {
-    const { displayName, bio, avatarUrl } = req.body;
+    console.log('[updateProfile] HIT — body keys:', Object.keys(req.body), 'email:', req.body.email);
+    const { displayName, bio, avatarUrl, email, pin } = req.body;
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
+
     if (displayName != null) user.displayName = displayName;
     if (bio != null) user.bio = bio;
     if (avatarUrl != null) user.avatarUrl = avatarUrl;
+
+    if (email != null && email !== user.email) {
+      console.log('[updateProfile] email block entered:', email, 'vs', user.email);
+      const ok = await user.checkPin(String(pin || ''));
+      console.log('[updateProfile] pin ok?', ok);
+      if (!ok) return res.status(401).json({ error: 'Incorrect PIN' });
+      // ...
+      user.email = normalized;
+      console.log('[updateProfile] email set to:', user.email);
+    }
+
     await user.save();
     return res.json({ user: user.toPublic() });
   } catch (err) {

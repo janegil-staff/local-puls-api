@@ -26,10 +26,9 @@ export const getMe = asyncHandler(async (req, res) => {
   if (!user) throw ApiError.notFound('User not found');
   res.json({ profile: user.toSelf() });
 });
-
 // Update dating profile. Enforces the 18+ age gate on DOB.
 export const updateProfile = asyncHandler(async (req, res) => {
-  const { displayName, bio, dob, gender, photos, interests, neighborhood } = req.body;
+  const { displayName, bio, dob, gender, photos, interests, neighborhood, email, pin } = req.body;
   const user = await User.findById(req.userId);
   if (!user) throw ApiError.notFound('User not found');
 
@@ -51,6 +50,19 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
   if (interests !== undefined) user.interests = (interests || []).slice(0, 10);
   if (neighborhood !== undefined) user.neighborhood = neighborhood;
+
+  // Email is a login credential — require the PIN and check uniqueness.
+  if (email !== undefined && email !== user.email) {
+    const normalized = String(email).toLowerCase().trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      throw ApiError.badRequest('Invalid email');
+    }
+    const ok = await user.checkPin(String(pin || ''));
+    if (!ok) throw ApiError.unauthorized ? ApiError.unauthorized('Incorrect PIN') : ApiError.badRequest('Incorrect PIN');
+    const taken = await User.findOne({ email: normalized, _id: { $ne: user._id } });
+    if (taken) throw ApiError.badRequest('Email already in use');
+    user.email = normalized;
+  }
 
   // Profile counts as complete when the essentials are present.
   user.profileComplete = Boolean(user.dob && user.gender && (user.photos?.length > 0));
