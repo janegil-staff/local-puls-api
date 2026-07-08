@@ -28,7 +28,8 @@ function shapeConvo(c, viewerId) {
   };
 }
 
-// Main inbox: ACCEPTED conversations the viewer is part of.
+// Main inbox: ACCEPTED conversations the viewer is part of, each with an
+// unread count (messages the viewer hasn't read, not sent by them).
 export async function listConversations(req, res) {
   try {
     const convos = await Conversation.find({
@@ -37,10 +38,60 @@ export async function listConversations(req, res) {
     })
       .sort({ lastMessageAt: -1 })
       .populate('participants');
-    return res.json({ conversations: convos.map((c) => shapeConvo(c, req.userId)) });
+
+    const shaped = await Promise.all(
+      convos.map(async (c) => {
+        const unread = await Message.countDocuments({
+          conversation: c._id,
+          sender: { $ne: req.userId },
+          readBy: { $ne: req.userId },
+        });
+        return { ...shapeConvo(c, req.userId), unread };
+      })
+    );
+    return res.json({ conversations: shaped });
   } catch (err) {
     console.error('listConversations error', err);
     return res.status(500).json({ error: 'Could not load conversations' });
+  }
+}
+
+// Total unread across all accepted conversations — for the tab badge.
+export async function chatUnreadCount(req, res) {
+  try {
+    const convos = await Conversation.find({
+      participants: req.userId,
+      status: 'accepted',
+    }).select('_id');
+    const ids = convos.map((c) => c._id);
+    const count = await Message.countDocuments({
+      conversation: { $in: ids },
+      sender: { $ne: req.userId },
+      readBy: { $ne: req.userId },
+    });
+    return res.json({ count });
+  } catch (err) {
+    console.error('unreadCount error', err);
+    return res.status(500).json({ error: 'Could not load unread count' });
+  }
+}
+
+// Mark all messages in a conversation as read by the viewer.
+export async function markRead(req, res) {
+  try {
+    const convo = await Conversation.findById(req.params.id);
+    if (!convo) return res.status(404).json({ error: 'Conversation not found' });
+    if (!convo.participants.some((p) => String(p) === String(req.userId))) {
+      return res.status(403).json({ error: 'Not your conversation' });
+    }
+    await Message.updateMany(
+      { conversation: req.params.id, readBy: { $ne: req.userId } },
+      { $addToSet: { readBy: req.userId } }
+    );
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('markRead error', err);
+    return res.status(500).json({ error: 'Could not mark read' });
   }
 }
 

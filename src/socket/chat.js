@@ -3,7 +3,13 @@ import jwt from 'jsonwebtoken';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import Block from '../models/Block.js';
+import User from '../models/User.js';
 import { config } from '../config/index.js';
+
+// Mark a user active now (throttled by the 2-min "online" window on read).
+async function touchLastSeen(userId) {
+  try { await User.updateOne({ _id: userId }, { lastSeenAt: new Date() }); } catch { /* ignore */ }
+}
 
 // Authenticate the socket from the JWT passed in handshake auth.
 function authSocket(socket, next) {
@@ -35,6 +41,10 @@ export function registerChat(io) {
   io.on('connection', (socket) => {
     // Personal room so we can push notifications to a user across devices.
     socket.join(`user:${socket.userId}`);
+
+    // Mark active on connect, and on a periodic heartbeat from the client.
+    touchLastSeen(socket.userId);
+    socket.on('presence:ping', () => touchLastSeen(socket.userId));
 
     // Join a conversation room to receive its messages live.
     socket.on('chat:join', ({ conversationId }) => {

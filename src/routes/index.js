@@ -11,7 +11,6 @@ import { createPost, getFeed, toggleLike } from '../controllers/postController.j
 import { listComments, addComment, deleteComment } from '../controllers/commentController.js';
 import { getProfile, follow, unfollow, followingFeed } from '../controllers/userController.js';
 import { toggleSave, listSaved } from '../controllers/savedController.js';
-import { listConversations, getMessages } from '../controllers/chatController.js';
 import { uploadImageHandler } from '../controllers/uploadController.js';
 import {
   listNotifications, unreadCount, markAllRead, registerPushToken, removePushToken,
@@ -27,6 +26,8 @@ import { requireAuth, optionalAuth } from '../middleware/auth.js';
 import { requireAdmin } from '../middleware/requireAdmin.js';
 import { validate } from '../middleware/validate.js';
 import { authLimiter } from '../middleware/rateLimit.js';
+// update the import:
+import { listConversations, listRequests, openConversation, acceptConversation, getMessages, chatUnreadCount, markRead } from '../controllers/chatController.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -120,4 +121,7 @@ router.delete('/admin/posts/:id', requireAuth, requireAdmin, adminDeletePost);
 router.get('/admin/reports', requireAuth, requireAdmin, listReports);
 router.patch('/admin/reports/:id', requireAuth, requireAdmin, resolveReport);
 
+// add these routes with the other /chat routes:
+router.get('/chat/unread-count', requireAuth, chatUnreadCount);
+router.post('/chat/conversations/:id/read', requireAuth, markRead);
 export default router;
