@@ -13,8 +13,8 @@ export async function register(req, res) {
     if (!password && !pin) {
       return res.status(400).json({ error: 'A password or PIN is required' });
     }
-    if (password && password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (password && password.length !== 4) {
+      return res.status(400).json({ error: 'Password must be at 4 characters' });
     }
     if (pin != null && !/^\d{4,6}$/.test(String(pin))) {
       return res.status(400).json({ error: 'PIN must be 4 to 6 digits' });
