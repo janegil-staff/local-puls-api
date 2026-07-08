@@ -5,6 +5,8 @@ import bcrypt from 'bcryptjs';
 export const GENDERS = ['female', 'male', 'nonbinary', 'other'];
 export const ORIENT_SHOW = ['female', 'male', 'everyone']; // who I want to see
 
+const ONLINE_MS = 2 * 60 * 1000; // "online" = active within the last 2 minutes
+
 // Compute age from a date of birth.
 function ageFromDob(dob) {
   if (!dob) return null;
@@ -25,7 +27,7 @@ const userSchema = new mongoose.Schema(
     banned: { type: Boolean, default: false },
     pushTokens: [{ type: String }],
 
-    // ── Dating profile ──────────────────────────────────
+    // ── Profile ─────────────────────────────────────────
     dob: { type: Date },                 // date of birth (age gate: 18+)
     gender: { type: String, enum: GENDERS },
     photos: [{ type: String }],          // ordered photo URLs (first = primary)
@@ -42,6 +44,10 @@ const userSchema = new mongoose.Schema(
 
     // Whether onboarding is complete enough to appear in discovery.
     profileComplete: { type: Boolean, default: false },
+
+    language: { type: String, default: "en" },
+    // Presence: updated on socket connect / heartbeat. "online" is derived.
+    lastSeenAt: { type: Date, default: Date.now },
 
     location: {
       type: { type: String, enum: ['Point'], default: 'Point' },
@@ -73,6 +79,11 @@ userSchema.virtual('age').get(function age() {
   return ageFromDob(this.dob);
 });
 
+// Is this user currently online (active within the window)?
+userSchema.methods.isOnline = function isOnline() {
+  return Boolean(this.lastSeenAt && Date.now() - new Date(this.lastSeenAt).getTime() < ONLINE_MS);
+};
+
 // Minimal public shape — never leak hash/email/dob.
 userSchema.methods.toPublic = function toPublic() {
   return {
@@ -81,6 +92,7 @@ userSchema.methods.toPublic = function toPublic() {
     displayName: this.displayName || this.username,
     photos: this.photos || [],
     avatarUrl: (this.photos && this.photos[0]) || '',
+    online: this.isOnline(),
   };
 };
 
@@ -88,12 +100,14 @@ userSchema.methods.toPublic = function toPublic() {
 userSchema.methods.toCard = function toCard() {
   return {
     id: this._id,
+    username: this.username,
     displayName: this.displayName || this.username,
     age: ageFromDob(this.dob),
     bio: this.bio,
     photos: this.photos || [],
     interests: this.interests || [],
     neighborhood: this.neighborhood,
+    online: this.isOnline(),
   };
 };
 
