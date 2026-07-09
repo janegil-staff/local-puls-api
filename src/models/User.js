@@ -64,24 +64,41 @@ const userSchema = new mongoose.Schema(
     // Where I appear to be. Coordinates are SNAPPED to a ~100m grid before
     // saving (see snapCoords) so stored positions can't be trilaterated back
     // to an exact home address.
+    //
+    // `default: undefined` — a user with no location has NO location. The old
+    // default of [0, 0] put every new account on Null Island (off Ghana), so
+    // any two users who hadn't reported GPS yet showed as 0 km apart.
     location: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: [0, 0] }, // [lng, lat]
+      type: {
+        type: { type: String, enum: ['Point'] },
+        coordinates: { type: [Number] }, // [lng, lat]
+      },
+      default: undefined,
     },
     locationMode: { type: String, enum: ['gps', 'manual'], default: 'gps' },
     locationName: { type: String, default: '' }, // e.g. "Bergen sentrum"
 
-    // Where I'm browsing. Empty coordinates → use my own `location`.
+    // Where I'm browsing. Absent entirely until the user picks somewhere —
+    // `default: undefined` on the outer field stops Mongoose materialising
+    // `{ type: 'Point' }` with no coordinates on every new document, which is
+    // invalid GeoJSON and breaks any 2dsphere index over this field.
     browseLocation: {
-      type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], default: undefined },
+      type: {
+        type: { type: String, enum: ['Point'] },
+        coordinates: { type: [Number] },
+      },
+      default: undefined,
     },
     browseLocationName: { type: String, default: '' },
   },
   { timestamps: true }
 );
 
-userSchema.index({ location: '2dsphere' });
+// Sparse: `location` is absent until a user reports a position, and a
+// non-sparse 2dsphere index over missing paths is wasteful (and errors on
+// older MongoDB). Documents without a location simply aren't indexed, which is
+// exactly right — they can't appear in $geoNear results anyway.
+userSchema.index({ location: '2dsphere' }, { sparse: true });
 // NOTE: deliberately NO 2dsphere index on browseLocation. Nothing ever runs a
 // geo query against it — it's only read off the viewer's own document to seed
 // $geoNear. A second 2dsphere index on this collection makes $geoNear ambiguous

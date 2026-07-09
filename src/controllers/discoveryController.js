@@ -49,7 +49,11 @@ export const getDeck = asyncHandler(async (req, res) => {
     ? me.browseLocation.coordinates
     : me.location?.coordinates;
 
-  if (!browseCoords?.length) throw ApiError.badRequest('Location required for discovery');
+  if (!browseCoords?.length) {
+    throw ApiError.badRequest(
+      'Set your location to see people nearby. Enable location access or pick an area in Settings.',
+    );
+  }
 
   const prefs = me.preferences || {};
   const limit = Math.min(Number(req.query.limit) || 40, 60);
@@ -77,6 +81,10 @@ export const getDeck = asyncHandler(async (req, res) => {
           _id: { $nin: excludeIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
           profileComplete: true,
           banned: false,
+          // Users who have never reported a position have no `location` at all.
+          // Without this they'd be excluded by $geoNear anyway, but being
+          // explicit documents the intent.
+          'location.coordinates': { $exists: true },
           gender: { $in: gendersFor(prefs.show) },
           dob: dobRangeForAges(prefs.ageMin || 18, prefs.ageMax || 99),
         },
