@@ -13,10 +13,26 @@ const ALLOWED_IMAGE_PREFIXES = [
   config.spacesCdnUrl ?? null,
 ].filter(Boolean);
 
+// Cloudinary's delivery host is fixed. Deriving the prefix from
+// config.cloudinary.cloudName means an unset env var silently rejects every
+// image — which is what happened in production, because the /upload route
+// configures the SDK from its own env vars and never touches config.cloudinary.
+// Match the host and let the cloud name be whatever it is.
+const CLOUDINARY_HOST = 'res.cloudinary.com';
+
 function isAllowedImageUrl(url) {
   if (typeof url !== 'string' || url.length > 500) return false;
-  if (ALLOWED_IMAGE_PREFIXES.length === 0) return true; // dev: nothing configured
-  return ALLOWED_IMAGE_PREFIXES.some((prefix) => url.startsWith(prefix));
+
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+
+  if (parsed.hostname === CLOUDINARY_HOST) return true;
+
+  // Dev fallback for local /uploads/ when Cloudinary isn't configured.
+  if (config.publicUrl && url.startsWith(`${config.publicUrl.replace(/\/$/, '')}/uploads/`)) return true;
+
+  return false;
 }
 
 // Mark a user active now (throttled by the 2-min "online" window on read).
