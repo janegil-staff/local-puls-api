@@ -161,6 +161,9 @@ export const setLocation = asyncHandler(async (req, res) => {
   user.location = { type: 'Point', coordinates: snapCoords([lng, lat]) };
   if (mode) user.locationMode = mode;
   if (typeof name === 'string') user.locationName = name;
+  // Switching back to GPS drops the hand-picked area name, otherwise the UI
+  // would show "Using GPS" next to a stale "Bergen sentrum".
+  if (mode === 'gps' && typeof name !== 'string') user.locationName = '';
   await user.save();
 
   res.json({

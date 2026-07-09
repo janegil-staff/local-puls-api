@@ -44,10 +44,10 @@ export const getDeck = asyncHandler(async (req, res) => {
   if (!me.profileComplete) throw ApiError.badRequest('Complete your profile first');
 
   // Browse from the chosen browse location if set, else my own location.
-  const browseCoords =
-    me.browseLocation?.coordinates?.length === 2
-      ? me.browseLocation.coordinates
-      : me.location?.coordinates;
+  const hasBrowseOverride = me.browseLocation?.coordinates?.length === 2;
+  const browseCoords = hasBrowseOverride
+    ? me.browseLocation.coordinates
+    : me.location?.coordinates;
 
   if (!browseCoords?.length) throw ApiError.badRequest('Location required for discovery');
 
@@ -104,6 +104,10 @@ export const getDeck = asyncHandler(async (req, res) => {
     users: list,
     people: list,
     deck: list,
-    browsingFrom: me.browseLocationName || me.locationName || null,
+    // What the header shows, and whether to offer "browse near me again".
+    browsingFrom: hasBrowseOverride
+      ? (me.browseLocationName || 'Another area')
+      : (me.locationName || null),
+    browsingElsewhere: hasBrowseOverride,
   });
 });
