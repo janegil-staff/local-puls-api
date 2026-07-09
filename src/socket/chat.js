@@ -6,6 +6,19 @@ import Block from '../models/Block.js';
 import User from '../models/User.js';
 import { config } from '../config/index.js';
 
+// The uploader returns absolute URLs; refuse anything else so a client can't
+// make us persist a link to an arbitrary host and render it in every bubble.
+const ALLOWED_IMAGE_PREFIXES = [
+  `${config.publicUrl ?? ''}/uploads/`,
+  config.spacesCdnUrl ?? null,
+].filter(Boolean);
+
+function isAllowedImageUrl(url) {
+  if (typeof url !== 'string' || url.length > 500) return false;
+  if (ALLOWED_IMAGE_PREFIXES.length === 0) return true; // dev: nothing configured
+  return ALLOWED_IMAGE_PREFIXES.some((prefix) => url.startsWith(prefix));
+}
+
 // Mark a user active now (throttled by the 2-min "online" window on read).
 async function touchLastSeen(userId) {
   try { await User.updateOne({ _id: userId }, { lastSeenAt: new Date() }); } catch { /* ignore */ }
@@ -35,6 +48,64 @@ async function blockedBetween(a, b) {
   return Boolean(block);
 }
 
+// Shared by chat:send and chat:sendImage. Loads the conversation, runs the
+// participant and block checks, and returns { convo, other } or an error
+// string — never both.
+async function loadSendable(userId, conversationId) {
+  if (!conversationId) return { error: 'Empty message' };
+
+  const convo = await Conversation.findById(conversationId);
+  if (!convo || !convo.participants.some((p) => String(p) === String(userId))) {
+    return { error: 'Not a participant' };
+  }
+
+  // Open messaging: anyone can message anyone UNLESS a block exists.
+  // (Pending conversations are allowed for text — the initiator's messages
+  // land in the recipient's Requests until they accept.)
+  const other = convo.participants.find((p) => String(p) !== String(userId));
+  if (other && (await blockedBetween(userId, other))) {
+    return { error: 'You cannot message this user' };
+  }
+
+  return { convo, other };
+}
+
+// Persist, bump the conversation, broadcast to the room, notify the rest.
+// `preview` is what the conversation list shows; for images it's a marker the
+// client localizes rather than a translated string chosen on the server.
+async function deliver(io, userId, convo, fields, preview) {
+  const message = await Message.create({
+    conversation: convo._id,
+    sender: userId,
+    readBy: [userId],
+    ...fields,
+  });
+  await message.populate('sender');
+
+  convo.lastMessage = preview;
+  convo.lastMessageAt = new Date();
+  await convo.save();
+
+  const payload = message.toClient();
+  io.to(`convo:${convo._id}`).emit('chat:message', payload);
+
+  // Notify participants not currently in the room (badge/notification).
+  // Include the conversation status so the client can route the ping to
+  // Messages vs Requests.
+  convo.participants
+    .filter((p) => String(p) !== String(userId))
+    .forEach((p) =>
+      io.to(`user:${p}`).emit('chat:notify', {
+        conversationId: convo._id,
+        preview,
+        status: convo.status,
+        pending: convo.status === 'pending',
+      })
+    );
+
+  return payload;
+}
+
 export function registerChat(io) {
   io.use(authSocket);
 
@@ -55,57 +126,43 @@ export function registerChat(io) {
       if (conversationId) socket.leave(`convo:${conversationId}`);
     });
 
-    // Send a message: persist, bump conversation, broadcast to the room + recipients.
+    // Send a text message.
     socket.on('chat:send', async ({ conversationId, text }, ack) => {
       try {
         const t = String(text || '').trim();
-        if (!conversationId || !t) return ack?.({ error: 'Empty message' });
+        if (!t) return ack?.({ error: 'Empty message' });
 
-        const convo = await Conversation.findById(conversationId);
-        if (!convo || !convo.participants.some((p) => String(p) === String(socket.userId))) {
-          return ack?.({ error: 'Not a participant' });
-        }
+        const { convo, error } = await loadSendable(socket.userId, conversationId);
+        if (error) return ack?.({ error });
 
-        // Open messaging: anyone can message anyone UNLESS a block exists.
-        // (Pending conversations are allowed — the initiator's messages land in
-        // the recipient's Requests until they accept.)
-        const other = convo.participants.find((p) => String(p) !== String(socket.userId));
-        if (other && (await blockedBetween(socket.userId, other))) {
-          return ack?.({ error: 'You cannot message this user' });
-        }
-
-        const message = await Message.create({
-          conversation: conversationId,
-          sender: socket.userId,
-          text: t,
-          readBy: [socket.userId],
-        });
-        await message.populate('sender');
-
-        convo.lastMessage = t;
-        convo.lastMessageAt = new Date();
-        await convo.save();
-
-        const payload = message.toClient();
-        io.to(`convo:${conversationId}`).emit('chat:message', payload);
-
-        // Notify participants not currently in the room (badge/notification).
-        // Include the conversation status so the client can route the ping to
-        // Messages vs Requests.
-        convo.participants
-          .filter((p) => String(p) !== String(socket.userId))
-          .forEach((p) =>
-            io.to(`user:${p}`).emit('chat:notify', {
-              conversationId,
-              preview: t,
-              status: convo.status,
-              pending: convo.status === 'pending',
-            })
-          );
-
+        const payload = await deliver(io, socket.userId, convo, { text: t }, t);
         ack?.({ ok: true, message: payload });
       } catch (err) {
         console.error('chat:send error', err);
+        ack?.({ error: 'Send failed' });
+      }
+    });
+
+    // Send an image. Unlike text, this requires an ACCEPTED conversation:
+    // a pending request is an unsolicited channel, and an unsolicited image
+    // in a location-based app is a well-known abuse vector. The recipient
+    // opts in by accepting first.
+    socket.on('chat:sendImage', async ({ conversationId, imageUrl }, ack) => {
+      try {
+        if (!isAllowedImageUrl(imageUrl)) return ack?.({ error: 'Invalid image' });
+
+        const { convo, error } = await loadSendable(socket.userId, conversationId);
+        if (error) return ack?.({ error });
+
+        if (convo.status !== 'accepted') {
+          return ack?.({ error: 'You can send photos once they accept your request' });
+        }
+
+        // '📷' rather than a sentence: the client localizes the preview.
+        const payload = await deliver(io, socket.userId, convo, { imageUrl }, '📷');
+        ack?.({ ok: true, message: payload });
+      } catch (err) {
+        console.error('chat:sendImage error', err);
         ack?.({ error: 'Send failed' });
       }
     });
