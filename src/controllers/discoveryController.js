@@ -22,9 +22,12 @@ import { ApiError } from '../utils/ApiError.js';
 
 const ONLINE_MS = 2 * 60 * 1000;
 
+// The client sends women/men/everyone; the DB stores female/male. Accept both
+// spellings so a stale client (or an old preferences row) still filters
+// correctly rather than silently falling through to "everyone".
 function gendersFor(show) {
-  if (show === 'female') return ['female'];
-  if (show === 'male') return ['male'];
+  if (show === 'women' || show === 'female') return ['female'];
+  if (show === 'men' || show === 'male') return ['male'];
   return GENDERS;
 }
 
@@ -64,7 +67,7 @@ export const getDeck = asyncHandler(async (req, res) => {
   const prefs = me.preferences || {};
   const limit = Math.min(Number(req.query.limit) || 40, 60);
 
-// `null` means "Anywhere" — no distance cut-off. Only `undefined` (field
+  // `null` means "Anywhere" — no distance cut-off. Only `undefined` (field
   // never written) falls back to 50. `??` would collapse null into the
   // default and make the omission below unreachable.
   const maxKm = prefs.maxDistanceKm === undefined ? 50 : prefs.maxDistanceKm;
