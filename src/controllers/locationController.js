@@ -17,53 +17,124 @@ const GRID = 1000;
 export const snap = (n) => Math.round(Number(n) * GRID) / GRID;
 export const snapCoords = ([lng, lat]) => [snap(lng), snap(lat)];
 
-// ── Geocoding via Nominatim (OpenStreetMap) ────────────────────────────
-// Called server-side only: keeps the user's search off third-party servers
-// per-device, lets us cache, and keeps us inside Nominatim's rate limit.
+// ── Geocoding via Photon (Komoot, OSM-backed) ──────────────────────────
+// Photon is built for AUTOCOMPLETE: it indexes prefixes, so "berg" returns
+// Bergen immediately. Nominatim is a full-text geocoder and handles partial
+// input badly — hence Photon here.
 //
-// Nominatim usage policy requires a descriptive User-Agent with contact info.
-// Set NOMINATIM_UA in your env, e.g.
-//   NOMINATIM_UA="LocalPulse/1.0 (contact@qupda.com)"
-const NOMINATIM = 'https://nominatim.openstreetmap.org/search';
-const UA = process.env.NOMINATIM_UA || 'LocalPulse/1.0 (contact@example.com)';
+// Free, no API key. Called server-side only: keeps the user's search off a
+// third party per-device, lets us cache, and keeps rate limiting in one place.
+//
+// Optional env:
+//   PHOTON_URL   — self-hosted instance (recommended if this gets busy)
+//   PHOTON_UA    — descriptive User-Agent, e.g. "LocalPulse/1.0 (you@qupda.com)"
+const PHOTON_URL = process.env.PHOTON_URL || 'https://photon.komoot.io/api';
+const UA = process.env.PHOTON_UA || 'LocalPulse/1.0 (contact@example.com)';
 
-// Tiny in-memory cache: query → { at, results }. Nominatim allows 1 req/sec;
-// caching keeps repeat searches free and well inside the limit.
+// Optionally restrict results to one country. Photon has no country parameter,
+// so we filter server-side on `countrycode` — an ISO code, stable across
+// languages (unlike `country`, which is localised: "Norge" vs "Norway").
+// Set GEOCODE_COUNTRY=NO while LocalPulse is Norway-only; unset it to expand.
+const ONLY_COUNTRY = (process.env.GEOCODE_COUNTRY || '').toUpperCase() || null;
+
+// Bias results toward the user's current position so "sentrum" means *their*
+// sentrum. Photon takes lat/lon as a soft bias, not a hard filter.
+function biasParams(user) {
+  const c = user?.location?.coordinates;
+  if (!c || c.length !== 2 || (c[0] === 0 && c[1] === 0)) return '';
+  return `&lat=${c[1]}&lon=${c[0]}`;
+}
+
+// Tiny in-memory cache: key → { at, results }. Place coordinates don't move.
 const cache = new Map();
-const CACHE_MS = 24 * 60 * 60 * 1000; // 24h — place coordinates don't move
+const CACHE_MS = 24 * 60 * 60 * 1000;
+const CACHE_MAX = 500;
+
+function cacheSet(key, results) {
+  if (cache.size >= CACHE_MAX) {
+    // drop oldest
+    const oldest = [...cache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (oldest) cache.delete(oldest[0]);
+  }
+  cache.set(key, { at: Date.now(), results });
+}
+
+// Photon returns GeoJSON features. Build a short label out of the properties.
+function labelFor(props) {
+  const { name, city, town, village, district, county, state, country } = props;
+  const local = name || district || city || town || village || '';
+  const region = (city && city !== local) ? city : (town || village || county || state || '');
+  if (local && region && local !== region) return `${local}, ${region}`;
+  return local || region || country || '';
+}
+
+// Prefer places people would actually pick: cities, towns, suburbs, villages.
+// Photon's osm_value tells us what kind of thing this is.
+const GOOD_VALUES = new Set([
+  'city', 'town', 'village', 'suburb', 'neighbourhood', 'quarter',
+  'borough', 'municipality', 'hamlet', 'county', 'state', 'island',
+]);
 
 export const geocode = asyncHandler(async (req, res) => {
   const q = String(req.query.q || '').trim();
+  // Autocomplete from the second character — that's the point of Photon.
   if (q.length < 2) return res.json({ results: [] });
 
-  const key = q.toLowerCase();
+  const me = await User.findById(req.userId).select('location');
+  const bias = biasParams(me);
+  const key = `${q.toLowerCase()}|${bias}`;
+
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) {
     return res.json({ results: hit.results, cached: true });
   }
 
-  const url = `${NOMINATIM}?q=${encodeURIComponent(q)}&format=json&limit=8&addressdetails=1`;
-  const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept-Language': 'no,en' } });
-  if (!r.ok) throw ApiError.badRequest('Location search is unavailable right now');
-  const raw = await r.json();
+  const url = `${PHOTON_URL}?q=${encodeURIComponent(q)}&limit=10${bias}&lang=default`;
 
-  const results = raw.map((p) => {
-    const a = p.address || {};
-    const short =
-      a.suburb || a.neighbourhood || a.city_district ||
-      a.city || a.town || a.village || a.municipality || p.name || '';
-    const region = a.city || a.municipality || a.county || '';
-    const label = short && region && short !== region ? `${short}, ${region}` : (short || p.display_name);
-    return {
-      name: label,
-      fullName: p.display_name,
-      // Snap on the way in so we never even hold a precise value.
-      lat: snap(p.lat),
-      lng: snap(p.lon),
-    };
-  });
+  let raw;
+  try {
+    const r = await fetch(url, {
+      headers: { 'User-Agent': UA },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) throw new Error(`photon ${r.status}`);
+    raw = await r.json();
+  } catch (err) {
+    console.error('geocode error', err.message);
+    throw ApiError.badRequest('Place search is unavailable right now');
+  }
 
-  cache.set(key, { at: Date.now(), results });
+  const seen = new Set();
+  const results = (raw.features || [])
+    .filter((f) => GOOD_VALUES.has(f.properties?.osm_value))
+    .map((f) => {
+      const [lon, lat] = f.geometry.coordinates;
+      const p = f.properties;
+      return {
+        name: labelFor(p),
+        fullName: [p.name, p.city, p.county, p.state, p.country].filter(Boolean).join(', '),
+        country: p.country || '',
+        countryCode: p.countrycode || '',
+        // Snap on the way in so we never even hold a precise value.
+        lat: snap(lat),
+        lng: snap(lon),
+      };
+    })
+    .filter((p) => {
+      if (!p.name) return false;
+      if (ONLY_COUNTRY && p.countryCode !== ONLY_COUNTRY) return false;
+      // Dedupe on the LABEL, not coordinates: Photon can return the same place
+      // as both a county and a municipality with different centroids, which
+      // would otherwise render as two identical-looking rows ("Oslo", "Oslo").
+      // Results are rank-ordered, so the first hit is the best one.
+      const k = p.name.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .slice(0, 8);
+
+  cacheSet(key, results);
   res.json({ results });
 });
 
@@ -80,12 +151,9 @@ export const setLocation = asyncHandler(async (req, res) => {
   const user = await User.findById(req.userId);
   if (!user) throw ApiError.unauthorized();
 
-  // A user in manual mode should not have their choice silently overwritten by
-  // a background GPS push. Only a manual update (or an explicit switch back to
-  // gps) may change the location once manual mode is on.
-  if (user.locationMode === 'manual' && mode !== 'manual' && mode !== 'gps') {
-    return res.json({ ok: true, skipped: 'manual mode active' });
-  }
+  // A user who set their location by hand should not have it silently
+  // overwritten by a background GPS push from Discover/Feed. Only an explicit
+  // update (mode given) may change it once manual mode is on.
   if (user.locationMode === 'manual' && !mode) {
     return res.json({ ok: true, skipped: 'manual mode active' });
   }
@@ -103,7 +171,7 @@ export const setLocation = asyncHandler(async (req, res) => {
   });
 });
 
-// ── Set where I'm browsing (null coords → clear, use my own location) ──
+// ── Set where I'm browsing (clear → fall back to my own location) ──────
 // body: { lat, lng, name } | { clear: true }
 export const setBrowseLocation = asyncHandler(async (req, res) => {
   const user = await User.findById(req.userId);
