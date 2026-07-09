@@ -68,6 +68,17 @@ const userSchema = new mongoose.Schema(
     interests: [{ type: String }],       // free tags, e.g. "hiking", "coffee"
     neighborhood: { type: String, default: '' }, // local flavor
 
+    // ── Privacy ─────────────────────────────────────────
+    // What other users may see about me. Both default to true, matching the
+    // behaviour before these fields existed — an account created earlier has
+    // them undefined, so every reader must treat undefined as true.
+    //
+    // These suppress the *output*, not the underlying data: lastSeenAt is still
+    // written on every heartbeat (presence drives socket routing), and $geoNear
+    // still ranks by real distance. We simply omit the fields from responses.
+    showOnlineStatus: { type: Boolean, default: true },
+    showDistance: { type: Boolean, default: true },
+
     // Discovery preferences.
     preferences: {
       show: { type: String, enum: ORIENT_SHOW, default: 'everyone' },
@@ -141,8 +152,19 @@ userSchema.virtual('age').get(function age() {
 });
 
 // Is this user currently online (active within the window)?
+//
+// This is the RAW presence check, used for socket routing. It ignores
+// showOnlineStatus by design — the flag governs what we tell other users, not
+// whether we know. Anything user-facing must go through visibleOnline().
 userSchema.methods.isOnline = function isOnline() {
   return Boolean(this.lastSeenAt && Date.now() - new Date(this.lastSeenAt).getTime() < ONLINE_MS);
+};
+
+// What OTHER users may see of my presence. `?? true` because accounts created
+// before showOnlineStatus existed have it undefined.
+userSchema.methods.visibleOnline = function visibleOnline() {
+  if ((this.showOnlineStatus ?? true) === false) return false;
+  return this.isOnline();
 };
 
 // Minimal public shape — never leak hash/email/dob.
@@ -153,7 +175,7 @@ userSchema.methods.toPublic = function toPublic() {
     displayName: this.displayName || this.username,
     photos: this.photos || [],
     avatarUrl: (this.photos && this.photos[0]) || '',
-    online: this.isOnline(),
+    online: this.visibleOnline(),
   };
 };
 
@@ -169,7 +191,7 @@ userSchema.methods.toCard = function toCard() {
     interests: this.interests || [],
     neighborhood: this.neighborhood,
     locationName: this.locationName || this.neighborhood || '',
-    online: this.isOnline(),
+    online: this.visibleOnline(),
   };
 };
 
@@ -190,6 +212,8 @@ userSchema.methods.toSelf = function toSelf() {
     neighborhood: this.neighborhood,
     preferences: this.preferences,
     profileComplete: this.profileComplete,
+    showOnlineStatus: this.showOnlineStatus ?? true,
+    showDistance: this.showDistance ?? true,
     locationMode: this.locationMode || 'gps',
     locationName: this.locationName || '',
     browseLocationName: this.browseLocationName || '',

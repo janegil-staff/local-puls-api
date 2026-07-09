@@ -8,6 +8,12 @@
 // Stored coordinates are already snapped to a ~100m grid (see
 // locationController.snapCoords), which is what actually defeats
 // trilateration; the rounding here is purely cosmetic.
+//
+// This pipeline builds cards by hand rather than calling User.toCard(),
+// because $geoNear returns plain objects, not hydrated documents. That means
+// every privacy rule in the model has to be mirrored here — see visibleOnline
+// and the showDistance branch below. If you add a flag to toCard(), add it
+// here too, or it will leak through Discover.
 import mongoose from 'mongoose';
 import User, { GENDERS } from '../models/User.js';
 import Block from '../models/Block.js';
@@ -62,7 +68,7 @@ export const getDeck = asyncHandler(async (req, res) => {
   //
   // `??`, not `||`: the latter treats 0 as unset and silently substitutes 50,
   // so a user who somehow stored 0 would get a 50km radius instead of an empty
-  // result. The model rejects 0 (min: 1), but reading defensively costs nothing.
+  // result. The model rejects 0, but reading defensively costs nothing.
   const maxKm = prefs.maxDistanceKm ?? 50;
 
   const blocks = await Block.find({ $or: [{ blocker: me._id }, { blocked: me._id }] });
@@ -105,19 +111,34 @@ export const getDeck = asyncHandler(async (req, res) => {
   ]);
 
   const now = Date.now();
-  const list = people.map((u) => ({
-    id: u._id,
-    username: u.username,
-    displayName: u.displayName || u.username,
-    age: u.dob ? Math.floor((now - new Date(u.dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
-    bio: u.bio,
-    photos: u.photos || [],
-    interests: u.interests || [],
-    neighborhood: u.neighborhood,
-    locationName: u.locationName || u.neighborhood || '',
-    online: Boolean(u.lastSeenAt && now - new Date(u.lastSeenAt).getTime() < ONLINE_MS),
-    distanceKm: displayKm(u.distanceMeters),
-  }));
+  const list = people.map((u) => {
+    // `?? true` — accounts created before these fields existed have them
+    // undefined, and undefined must mean "as it behaved before", i.e. visible.
+    const showsOnline = u.showOnlineStatus ?? true;
+    const showsDistance = u.showDistance ?? true;
+
+    const card = {
+      id: u._id,
+      username: u.username,
+      displayName: u.displayName || u.username,
+      age: u.dob ? Math.floor((now - new Date(u.dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
+      bio: u.bio,
+      photos: u.photos || [],
+      interests: u.interests || [],
+      neighborhood: u.neighborhood,
+      locationName: u.locationName || u.neighborhood || '',
+      online: showsOnline
+        ? Boolean(u.lastSeenAt && now - new Date(u.lastSeenAt).getTime() < ONLINE_MS)
+        : false,
+    };
+
+    // Omit the key entirely rather than sending null. A client that renders
+    // `{distanceKm} km` would print "null km"; an absent key is falsy and the
+    // row simply doesn't appear.
+    if (showsDistance) card.distanceKm = displayKm(u.distanceMeters);
+
+    return card;
+  });
 
   res.json({
     users: list,

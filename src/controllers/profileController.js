@@ -20,6 +20,11 @@ const MAX_AGE = 99;
 const MIN_DISTANCE_KM = 1;
 const MAX_DISTANCE_KM = 500;
 
+// Must match SUPPORTED_LANGS in the app's i18n/translations.js. A value outside
+// this set would render every string through the English fallback, which looks
+// like a bug rather than a rejection.
+const SUPPORTED_LANGS = ['no', 'en', 'nl', 'fr', 'de', 'it', 'sv', 'da', 'fi', 'es', 'pl', 'pt'];
+
 function ageFromDob(dob) {
   return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000));
 }
@@ -33,7 +38,10 @@ export const getMe = asyncHandler(async (req, res) => {
 
 // Update dating profile. Enforces the 18+ age gate on DOB.
 export const updateProfile = asyncHandler(async (req, res) => {
-  const { displayName, bio, dob, gender, photos, interests, neighborhood, email, pin, username } = req.body;
+  const {
+    displayName, bio, dob, gender, photos, interests, neighborhood,
+    email, pin, username, language, showOnlineStatus, showDistance,
+  } = req.body;
   const user = await User.findById(req.userId);
   if (!user) throw ApiError.notFound('User not found');
 
@@ -55,6 +63,25 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
   if (interests !== undefined) user.interests = (interests || []).slice(0, 10);
   if (neighborhood !== undefined) user.neighborhood = neighborhood;
+
+  // UI language. Previously absent from this destructure, so the onboarding
+  // flow's `updateMyProfile({ language })` call was a silent no-op and every
+  // account kept the 'no' default regardless of what the user picked.
+  if (language !== undefined) {
+    if (!SUPPORTED_LANGS.includes(language)) throw ApiError.badRequest('Unsupported language');
+    user.language = language;
+  }
+
+  // Privacy flags. Coerce explicitly: a client sending the string "false" would
+  // otherwise be truthy and silently enable what the user just turned off.
+  if (showOnlineStatus !== undefined) {
+    if (typeof showOnlineStatus !== 'boolean') throw ApiError.badRequest('showOnlineStatus must be a boolean');
+    user.showOnlineStatus = showOnlineStatus;
+  }
+  if (showDistance !== undefined) {
+    if (typeof showDistance !== 'boolean') throw ApiError.badRequest('showDistance must be a boolean');
+    user.showDistance = showDistance;
+  }
 
   // Username: a login identifier, so check uniqueness (no PIN needed).
   if (username !== undefined && username !== user.username) {
