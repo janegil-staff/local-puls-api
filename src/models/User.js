@@ -7,6 +7,18 @@ export const ORIENT_SHOW = ['female', 'male', 'everyone']; // who I want to see
 
 const ONLINE_MS = 2 * 60 * 1000; // "online" = active within the last 2 minutes
 
+// Snap a coordinate to a ~100m grid (3 decimal places). Storing exact
+// coordinates lets an attacker with three accounts trilaterate a user's real
+// position from the distances the API returns. Snapping collapses everyone in
+// the same ~100m cell to identical distances.
+const GRID = 1000; // 3 decimals
+export function snapCoord(n) {
+  return Math.round(Number(n) * GRID) / GRID;
+}
+export function snapCoords([lng, lat]) {
+  return [snapCoord(lng), snapCoord(lat)];
+}
+
 // Compute age from a date of birth.
 function ageFromDob(dob) {
   if (!dob) return null;
@@ -22,7 +34,7 @@ const userSchema = new mongoose.Schema(
     pinHash: { type: String }, // optional 4-6 digit PIN, hashed
     displayName: { type: String, trim: true, maxlength: 40 },
     bio: { type: String, maxlength: 300, default: '' },
-    language: { type: String, default: 'en' }, // UI language: no/en/nl/fr/de/it/sv/da/fi/es/pl/pt
+    language: { type: String, default: 'no' }, // UI language: no/en/nl/fr/de/it/sv/da/fi/es/pl/pt
 
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     banned: { type: Boolean, default: false },
@@ -49,15 +61,28 @@ const userSchema = new mongoose.Schema(
     // Presence: updated on socket connect / heartbeat. "online" is derived.
     lastSeenAt: { type: Date, default: Date.now },
 
+    // Where I appear to be. Coordinates are SNAPPED to a ~100m grid before
+    // saving (see snapCoords) so stored positions can't be trilaterated back
+    // to an exact home address.
     location: {
       type: { type: String, enum: ['Point'], default: 'Point' },
       coordinates: { type: [Number], default: [0, 0] }, // [lng, lat]
     },
+    locationMode: { type: String, enum: ['gps', 'manual'], default: 'gps' },
+    locationName: { type: String, default: '' }, // e.g. "Bergen sentrum"
+
+    // Where I'm browsing. Empty coordinates → use my own `location`.
+    browseLocation: {
+      type: { type: String, enum: ['Point'], default: 'Point' },
+      coordinates: { type: [Number], default: undefined },
+    },
+    browseLocationName: { type: String, default: '' },
   },
   { timestamps: true }
 );
 
 userSchema.index({ location: '2dsphere' });
+userSchema.index({ browseLocation: '2dsphere' });
 userSchema.index({ gender: 1, profileComplete: 1 });
 
 userSchema.methods.setPassword = async function setPassword(plain) {
@@ -107,6 +132,7 @@ userSchema.methods.toCard = function toCard() {
     photos: this.photos || [],
     interests: this.interests || [],
     neighborhood: this.neighborhood,
+    locationName: this.locationName || this.neighborhood || '',
     online: this.isOnline(),
   };
 };
@@ -128,6 +154,10 @@ userSchema.methods.toSelf = function toSelf() {
     neighborhood: this.neighborhood,
     preferences: this.preferences,
     profileComplete: this.profileComplete,
+    locationMode: this.locationMode || 'gps',
+    locationName: this.locationName || '',
+    browseLocationName: this.browseLocationName || '',
+    hasBrowseLocation: Boolean(this.browseLocation?.coordinates?.length),
   };
 };
 
