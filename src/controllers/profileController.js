@@ -76,7 +76,7 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
 
   // Profile counts as complete when the essentials are present.
-  user.profileComplete = Boolean(user.dob && user.gender && (user.photos?.length > 0));
+  user.profileComplete = Boolean(user.dob && user.gender);
 
   await user.save();
   res.json({ profile: user.toSelf() });
