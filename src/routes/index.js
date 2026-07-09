@@ -28,6 +28,8 @@ import { validate } from '../middleware/validate.js';
 import { authLimiter } from '../middleware/rateLimit.js';
 // update the import:
 import { listConversations, listRequests, openConversation, acceptConversation, getMessages, chatUnreadCount, markRead } from '../controllers/chatController.js';
+import { geocode, setLocation, setBrowseLocation } from '../controllers/locationController.js';
+
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -129,4 +131,9 @@ router.patch('/admin/reports/:id', requireAuth, requireAdmin, resolveReport);
 // add these routes with the other /chat routes:
 router.get('/chat/unread-count', requireAuth, chatUnreadCount);
 router.post('/chat/conversations/:id/read', requireAuth, markRead);
+
+router.get('/geocode', requireAuth, geocode);
+router.post('/location', requireAuth, setLocation);
+router.post('/browse-location', requireAuth, setBrowseLocation);
+
 export default router;
