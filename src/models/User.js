@@ -69,13 +69,13 @@ const userSchema = new mongoose.Schema(
     neighborhood: { type: String, default: '' }, // local flavor
 
     // Discovery preferences.
+
     preferences: {
       show: { type: String, enum: ORIENT_SHOW, default: 'everyone' },
       ageMin: { type: Number, default: 18, min: 18 },
       ageMax: { type: Number, default: 99 },
-      maxDistanceKm: { type: Number, default: 50 },
+      maxDistanceKm: { type: Number, default: 50, min: 1, max: 500 },
     },
-
     // Whether onboarding is complete enough to appear in discovery.
     profileComplete: { type: Boolean, default: false },
 

@@ -57,7 +57,13 @@ export const getDeck = asyncHandler(async (req, res) => {
 
   const prefs = me.preferences || {};
   const limit = Math.min(Number(req.query.limit) || 40, 60);
-  const maxMeters = (prefs.maxDistanceKm || 50) * 1000;
+
+  // `null` means "Anywhere" — no distance cut-off.
+  //
+  // `??`, not `||`: the latter treats 0 as unset and silently substitutes 50,
+  // so a user who somehow stored 0 would get a 50km radius instead of an empty
+  // result. The model rejects 0 (min: 1), but reading defensively costs nothing.
+  const maxKm = prefs.maxDistanceKm ?? 50;
 
   const blocks = await Block.find({ $or: [{ blocker: me._id }, { blocked: me._id }] });
   const excludeIds = [me._id];
@@ -65,31 +71,36 @@ export const getDeck = asyncHandler(async (req, res) => {
     excludeIds.push(String(b.blocker) === String(me._id) ? b.blocked : b.blocker)
   );
 
-  const people = await User.aggregate([
-    {
-      $geoNear: {
-        near: { type: 'Point', coordinates: browseCoords },
-        distanceField: 'distanceMeters',
-        maxDistance: maxMeters,
-        spherical: true,
-        // REQUIRED: the users collection has two 2dsphere indexes (location and
-        // browseLocation). Without `key`, MongoDB errors with
-        // "more than one 2dsphere index ... unsure which to use for $geoNear".
-        // We measure distance to where people *are*, not where they browse.
-        key: 'location',
-        query: {
-          _id: { $nin: excludeIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
-          profileComplete: true,
-          banned: false,
-          // Users who have never reported a position have no `location` at all.
-          // Without this they'd be excluded by $geoNear anyway, but being
-          // explicit documents the intent.
-          'location.coordinates': { $exists: true },
-          gender: { $in: gendersFor(prefs.show) },
-          dob: dobRangeForAges(prefs.ageMin || 18, prefs.ageMax || 99),
-        },
-      },
+  const geoNear = {
+    near: { type: 'Point', coordinates: browseCoords },
+    distanceField: 'distanceMeters',
+    spherical: true,
+    // REQUIRED: the users collection has two 2dsphere indexes (location and
+    // browseLocation). Without `key`, MongoDB errors with
+    // "more than one 2dsphere index ... unsure which to use for $geoNear".
+    // We measure distance to where people *are*, not where they browse.
+    key: 'location',
+    query: {
+      _id: { $nin: excludeIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
+      profileComplete: true,
+      banned: false,
+      // Users who have never reported a position have no `location` at all.
+      // Without this they'd be excluded by $geoNear anyway, but being
+      // explicit documents the intent.
+      'location.coordinates': { $exists: true },
+      gender: { $in: gendersFor(prefs.show) },
+      dob: dobRangeForAges(prefs.ageMin || 18, prefs.ageMax || 99),
     },
+  };
+
+  // Omit maxDistance entirely for "Anywhere". $geoNear streams results
+  // nearest-first regardless, so the $limit below still yields the closest N —
+  // we just never cut anyone off. Passing Infinity or a huge number would also
+  // "work", but defeats the index's early termination.
+  if (maxKm != null) geoNear.maxDistance = maxKm * 1000;
+
+  const people = await User.aggregate([
+    { $geoNear: geoNear },
     { $limit: limit },
   ]);
 
