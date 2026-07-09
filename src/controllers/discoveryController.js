@@ -64,12 +64,10 @@ export const getDeck = asyncHandler(async (req, res) => {
   const prefs = me.preferences || {};
   const limit = Math.min(Number(req.query.limit) || 40, 60);
 
-  // `null` means "Anywhere" — no distance cut-off.
-  //
-  // `??`, not `||`: the latter treats 0 as unset and silently substitutes 50,
-  // so a user who somehow stored 0 would get a 50km radius instead of an empty
-  // result. The model rejects 0, but reading defensively costs nothing.
-  const maxKm = prefs.maxDistanceKm ?? 50;
+// `null` means "Anywhere" — no distance cut-off. Only `undefined` (field
+  // never written) falls back to 50. `??` would collapse null into the
+  // default and make the omission below unreachable.
+  const maxKm = prefs.maxDistanceKm === undefined ? 50 : prefs.maxDistanceKm;
 
   const blocks = await Block.find({ $or: [{ blocker: me._id }, { blocked: me._id }] });
   const excludeIds = [me._id];
