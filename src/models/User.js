@@ -82,7 +82,10 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ location: '2dsphere' });
-userSchema.index({ browseLocation: '2dsphere' });
+// NOTE: deliberately NO 2dsphere index on browseLocation. Nothing ever runs a
+// geo query against it — it's only read off the viewer's own document to seed
+// $geoNear. A second 2dsphere index on this collection makes $geoNear ambiguous
+// ("unsure which to use") unless every call passes an explicit `key`.
 userSchema.index({ gender: 1, profileComplete: 1 });
 
 userSchema.methods.setPassword = async function setPassword(plain) {

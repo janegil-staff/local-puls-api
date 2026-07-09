@@ -68,6 +68,11 @@ export const getDeck = asyncHandler(async (req, res) => {
         distanceField: 'distanceMeters',
         maxDistance: maxMeters,
         spherical: true,
+        // REQUIRED: the users collection has two 2dsphere indexes (location and
+        // browseLocation). Without `key`, MongoDB errors with
+        // "more than one 2dsphere index ... unsure which to use for $geoNear".
+        // We measure distance to where people *are*, not where they browse.
+        key: 'location',
         query: {
           _id: { $nin: excludeIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
           profileComplete: true,
