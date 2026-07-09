@@ -32,9 +32,9 @@ function ageFromDob(dob) {
 // as `{ type: { type: {...}, coordinates: {...} }, default: undefined }`,
 // Mongoose reads the outer `type:` key as a *type declaration* — so the
 // `default: undefined` is a sibling of that declaration and never applies to
-// the path. The result is that every new document materialises a partial
-// `{ type: 'Point' }` with no coordinates, which is invalid GeoJSON, and any
-// 2dsphere index over the path then throws `Can't extract geo keys` on insert.
+// the path. Every new document then materialises a partial `{ type: 'Point' }`
+// with no coordinates, which is invalid GeoJSON, and any 2dsphere index over
+// the path throws `Can't extract geo keys` on insert.
 //
 // Declared as a sub-schema, the outer `type: pointSchema` is a genuine type,
 // `default: undefined` binds to the path, and `required: true` on the inner
@@ -69,13 +69,21 @@ const userSchema = new mongoose.Schema(
     neighborhood: { type: String, default: '' }, // local flavor
 
     // Discovery preferences.
-
     preferences: {
       show: { type: String, enum: ORIENT_SHOW, default: 'everyone' },
       ageMin: { type: Number, default: 18, min: 18 },
       ageMax: { type: Number, default: 99 },
-      maxDistanceKm: { type: Number, default: 50, min: 1, max: 500 },
+
+      // null = "Anywhere", no distance cut-off.
+      //
+      // Deliberately NO `min`/`max` here. Mongoose's min validator RUNS on
+      // null (null < 1 is true) rather than skipping it, so `min: 1` would
+      // reject the very value that means "no limit" — save() throws, the
+      // request 500s, and the client's toggle springs back. Range is enforced
+      // in profileController.updatePreferences, which knows null is legal.
+      maxDistanceKm: { type: Number, default: 50 },
     },
+
     // Whether onboarding is complete enough to appear in discovery.
     profileComplete: { type: Boolean, default: false },
 

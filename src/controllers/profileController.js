@@ -11,10 +11,14 @@ import Post from '../models/Post.js';
 import Comment from '../models/Comment.js';
 import Follow from '../models/Follow.js';
 import SavedPost from '../models/SavedPost.js';
+import { snapCoords } from './locationController.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/ApiError.js';
 
 const MIN_AGE = 18;
+const MAX_AGE = 99;
+const MIN_DISTANCE_KM = 1;
+const MAX_DISTANCE_KM = 500;
 
 function ageFromDob(dob) {
   return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000));
@@ -26,6 +30,7 @@ export const getMe = asyncHandler(async (req, res) => {
   if (!user) throw ApiError.notFound('User not found');
   res.json({ profile: user.toSelf() });
 });
+
 // Update dating profile. Enforces the 18+ age gate on DOB.
 export const updateProfile = asyncHandler(async (req, res) => {
   const { displayName, bio, dob, gender, photos, interests, neighborhood, email, pin, username } = req.body;
@@ -93,20 +98,65 @@ export const updatePreferences = asyncHandler(async (req, res) => {
     user.preferences.show = show;
   }
   if (ageMin !== undefined) user.preferences.ageMin = Math.max(MIN_AGE, Number(ageMin));
-  if (ageMax !== undefined) user.preferences.ageMax = Math.min(99, Number(ageMax));
-  if (maxDistanceKm !== undefined) user.preferences.maxDistanceKm = Math.max(1, Number(maxDistanceKm));
+  if (ageMax !== undefined) user.preferences.ageMax = Math.min(MAX_AGE, Number(ageMax));
+
+  // `null` means "Anywhere" — no distance cut-off. It must be handled BEFORE
+  // any arithmetic: Number(null) is 0, so the old `Math.max(1, Number(null))`
+  // silently became 1, saved a 1km radius, and returned 200. To the client
+  // that looked like the toggle saved and then sprang back.
+  //
+  // Explicitly assigning null persists it — the schema default only applies at
+  // document creation, not on save.
+  if (maxDistanceKm !== undefined) {
+    if (maxDistanceKm === null) {
+      user.preferences.maxDistanceKm = null;
+    } else {
+      const n = Number(maxDistanceKm);
+      if (!Number.isFinite(n)) throw ApiError.badRequest('maxDistanceKm must be a number');
+      user.preferences.maxDistanceKm = Math.min(MAX_DISTANCE_KM, Math.max(MIN_DISTANCE_KM, n));
+    }
+  }
+
+  if (user.preferences.ageMin > user.preferences.ageMax) {
+    throw ApiError.badRequest('Minimum age cannot exceed maximum age');
+  }
 
   await user.save();
   res.json({ preferences: user.preferences });
 });
 
 // Update last-known location (called by the app when it gets a fix).
+//
+// NOTE: this is a second write path for `location`, alongside
+// locationController.setLocation. It exists for background GPS pushes from
+// Discover/Feed, which have no place name to attach. It MUST snap like the
+// other path does — an unsnapped write here would store an exact position and
+// defeat the grid entirely, since an attacker only needs the target to have
+// used the app once with location on.
 export const updateLocation = asyncHandler(async (req, res) => {
   const { lng, lat } = req.body;
   if (lng == null || lat == null) throw ApiError.badRequest('lng and lat required');
+
+  const lngN = Number(lng);
+  const latN = Number(lat);
+  if (!Number.isFinite(lngN) || !Number.isFinite(latN)) {
+    throw ApiError.badRequest('lng and lat must be numbers');
+  }
+  if (latN < -90 || latN > 90 || lngN < -180 || lngN > 180) {
+    throw ApiError.badRequest('coordinates out of range');
+  }
+
+  // Don't clobber a hand-picked location with a background GPS push. Mirrors
+  // the guard in locationController.setLocation.
+  const user = await User.findById(req.userId).select('locationMode');
+  if (!user) throw ApiError.unauthorized();
+  if (user.locationMode === 'manual') {
+    return res.json({ ok: true, skipped: 'manual mode active' });
+  }
+
   await User.updateOne(
     { _id: req.userId },
-    { location: { type: 'Point', coordinates: [Number(lng), Number(lat)] } }
+    { location: { type: 'Point', coordinates: snapCoords([lngN, latN]) } },
   );
   res.json({ ok: true });
 });
