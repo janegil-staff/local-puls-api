@@ -31,6 +31,10 @@ export const snapCoords = ([lng, lat]) => [snap(lng), snap(lat)];
 const PHOTON_URL = process.env.PHOTON_URL || 'https://photon.komoot.io/api';
 const UA = process.env.PHOTON_UA || 'LocalPulse/1.0 (contact@example.com)';
 
+// Photon's reverse endpoint sits alongside /api at /reverse. Derive it from
+// PHOTON_URL so a self-hosted instance keeps working without a second env var.
+const PHOTON_REVERSE = PHOTON_URL.replace(/\/api\/?$/, '/reverse');
+
 // Optionally restrict results to one country. Photon has no country parameter,
 // so we filter server-side on `countrycode` — an ISO code, stable across
 // languages (unlike `country`, which is localised: "Norge" vs "Norway").
@@ -39,6 +43,11 @@ const ONLY_COUNTRY = (process.env.GEOCODE_COUNTRY || '').toUpperCase() || null;
 
 // Bias results toward the user's current position so "sentrum" means *their*
 // sentrum. Photon takes lat/lon as a soft bias, not a hard filter.
+//
+// The [0, 0] check is legacy: an older schema defaulted `location` to Null
+// Island. Documents now either have real coordinates or no `location` at all,
+// which the `!c` branch already covers. Safe to drop once the backfill has run
+// against every environment.
 function biasParams(user) {
   const c = user?.location?.coordinates;
   if (!c || c.length !== 2 || (c[0] === 0 && c[1] === 0)) return '';
@@ -74,6 +83,37 @@ const GOOD_VALUES = new Set([
   'city', 'town', 'village', 'suburb', 'neighbourhood', 'quarter',
   'borough', 'municipality', 'hamlet', 'county', 'state', 'island',
 ]);
+
+// Reverse-geocode already-snapped coordinates to a coarse place name.
+//
+// Never throws: a missing name is cosmetic, and a Photon outage must not fail
+// the location write itself. Shares the forward-geocode cache under a `rev|`
+// prefix — since the input is snapped, repeat lookups from the same ~100m cell
+// hit the cache rather than Photon.
+async function reverseName(lng, lat) {
+  const key = `rev|${lng},${lat}`;
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.results;
+
+  try {
+    const r = await fetch(`${PHOTON_REVERSE}?lat=${lat}&lon=${lng}&limit=1`, {
+      headers: { 'User-Agent': UA },
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!r.ok) return '';
+    const raw = await r.json();
+
+    const p = raw.features?.[0]?.properties;
+    if (!p) return '';
+    if (ONLY_COUNTRY && p.countrycode !== ONLY_COUNTRY) return '';
+
+    const name = labelFor(p);
+    cacheSet(key, name);
+    return name;
+  } catch {
+    return '';
+  }
+}
 
 export const geocode = asyncHandler(async (req, res) => {
   const q = String(req.query.q || '').trim();
@@ -145,6 +185,12 @@ export const setLocation = asyncHandler(async (req, res) => {
   if (typeof lat !== 'number' || typeof lng !== 'number') {
     throw ApiError.badRequest('lat and lng are required');
   }
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw ApiError.badRequest('lat and lng must be finite');
+  }
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    throw ApiError.badRequest('coordinates out of range');
+  }
   if (mode && !['gps', 'manual'].includes(mode)) {
     throw ApiError.badRequest('mode must be "gps" or "manual"');
   }
@@ -158,12 +204,19 @@ export const setLocation = asyncHandler(async (req, res) => {
     return res.json({ ok: true, skipped: 'manual mode active' });
   }
 
-  user.location = { type: 'Point', coordinates: snapCoords([lng, lat]) };
+  const coordinates = snapCoords([lng, lat]);
+  user.location = { type: 'Point', coordinates };
   if (mode) user.locationMode = mode;
-  if (typeof name === 'string') user.locationName = name;
-  // Switching back to GPS drops the hand-picked area name, otherwise the UI
-  // would show "Using GPS" next to a stale "Bergen sentrum".
-  if (mode === 'gps' && typeof name !== 'string') user.locationName = '';
+
+  if (typeof name === 'string') {
+    // Caller supplied a label (the manual place picker) — trust it.
+    user.locationName = name;
+  } else if (mode === 'gps') {
+    // Reverse-geocode the SNAPPED coordinates, so the stored name describes
+    // the grid cell we saved rather than the precise fix the device reported.
+    // An empty result is fine: toCard() falls back to `neighborhood`.
+    user.locationName = await reverseName(coordinates[0], coordinates[1]);
+  }
   await user.save();
 
   res.json({
@@ -181,6 +234,9 @@ export const setBrowseLocation = asyncHandler(async (req, res) => {
   if (!user) throw ApiError.unauthorized();
 
   if (req.body?.clear) {
+    // With `browseLocation` declared as a sub-schema with `default: undefined`,
+    // this genuinely unsets the path. Under the old inline definition it came
+    // back as a partial `{ type: 'Point' }` — invalid GeoJSON.
     user.browseLocation = undefined;
     user.browseLocationName = '';
     await user.save();
@@ -191,6 +247,13 @@ export const setBrowseLocation = asyncHandler(async (req, res) => {
   if (typeof lat !== 'number' || typeof lng !== 'number') {
     throw ApiError.badRequest('lat and lng are required');
   }
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw ApiError.badRequest('lat and lng must be finite');
+  }
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    throw ApiError.badRequest('coordinates out of range');
+  }
+
   user.browseLocation = { type: 'Point', coordinates: snapCoords([lng, lat]) };
   user.browseLocationName = typeof name === 'string' ? name : '';
   await user.save();

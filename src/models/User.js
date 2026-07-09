@@ -26,6 +26,27 @@ function ageFromDob(dob) {
   return Math.floor(diff / (365.25 * 24 * 60 * 60 * 1000));
 }
 
+// A GeoJSON point.
+//
+// This MUST be a real sub-schema, not an inline nested object. Written inline
+// as `{ type: { type: {...}, coordinates: {...} }, default: undefined }`,
+// Mongoose reads the outer `type:` key as a *type declaration* — so the
+// `default: undefined` is a sibling of that declaration and never applies to
+// the path. The result is that every new document materialises a partial
+// `{ type: 'Point' }` with no coordinates, which is invalid GeoJSON, and any
+// 2dsphere index over the path then throws `Can't extract geo keys` on insert.
+//
+// Declared as a sub-schema, the outer `type: pointSchema` is a genuine type,
+// `default: undefined` binds to the path, and `required: true` on the inner
+// fields makes a half-formed point fail validation instead of reaching Mongo.
+const pointSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ['Point'], required: true },
+    coordinates: { type: [Number], required: true }, // [lng, lat]
+  },
+  { _id: false },
+);
+
 const userSchema = new mongoose.Schema(
   {
     username: { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 24 },
@@ -65,30 +86,17 @@ const userSchema = new mongoose.Schema(
     // saving (see snapCoords) so stored positions can't be trilaterated back
     // to an exact home address.
     //
-    // `default: undefined` — a user with no location has NO location. The old
-    // default of [0, 0] put every new account on Null Island (off Ghana), so
-    // any two users who hadn't reported GPS yet showed as 0 km apart.
-    location: {
-      type: {
-        type: { type: String, enum: ['Point'] },
-        coordinates: { type: [Number] }, // [lng, lat]
-      },
-      default: undefined,
-    },
+    // Absent entirely until the user reports a position. The old inline
+    // definition defaulted this to [0, 0], putting every new account on Null
+    // Island (off Ghana), so any two users who hadn't reported GPS yet showed
+    // as 0 km apart.
+    location: { type: pointSchema, default: undefined },
+
     locationMode: { type: String, enum: ['gps', 'manual'], default: 'gps' },
     locationName: { type: String, default: '' }, // e.g. "Bergen sentrum"
 
-    // Where I'm browsing. Absent entirely until the user picks somewhere —
-    // `default: undefined` on the outer field stops Mongoose materialising
-    // `{ type: 'Point' }` with no coordinates on every new document, which is
-    // invalid GeoJSON and breaks any 2dsphere index over this field.
-    browseLocation: {
-      type: {
-        type: { type: String, enum: ['Point'] },
-        coordinates: { type: [Number] },
-      },
-      default: undefined,
-    },
+    // Where I'm browsing. Absent until the user picks somewhere.
+    browseLocation: { type: pointSchema, default: undefined },
     browseLocationName: { type: String, default: '' },
   },
   { timestamps: true }
