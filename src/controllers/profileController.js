@@ -14,6 +14,7 @@ import SavedPost from '../models/SavedPost.js';
 import { snapCoords } from './locationController.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/ApiError.js';
+import { destroyImages } from '../lib/cloudinary.js';
 
 const MIN_AGE = 18;
 const MAX_AGE = 99;
@@ -211,6 +212,60 @@ export const deleteAccount = asyncHandler(async (req, res) => {
     Follow.deleteMany({ $or: [{ follower: uid }, { following: uid }] }),
     SavedPost.deleteMany({ user: uid }),
   ]);
+
+  res.json({ ok: true, deleted: true });
+});
+
+// Full account deletion — App Store Guideline 5.1.1 requires this in-app.
+// Removes the user, all data derived from them, and their uploaded images.
+export const deleteAccount = asyncHandler(async (req, res) => {
+  const uid = req.userId;
+
+  // Collect image URLs BEFORE deleting the documents that hold them.
+  const [user, posts, messages] = await Promise.all([
+    User.findById(uid).select('photos'),
+    Post.find({ author: uid }).select('imageUrl'),
+    Message.find({ sender: uid, imageUrl: { $exists: true } }).select('imageUrl'),
+  ]);
+
+  const imageUrls = [
+    ...(user?.photos ?? []),
+    ...posts.map((p) => p.imageUrl).filter(Boolean),
+    ...messages.map((m) => m.imageUrl).filter(Boolean),
+  ];
+
+  // Comments on the user's posts, and saves of them, would otherwise be
+  // orphaned — Post.deleteMany doesn't cascade.
+  const postIds = posts.map((p) => p._id);
+
+  // Conversations the user is a participant in. The old code went via Match,
+  // which misses conversations created by openConversation() without a match.
+  const convos = await Conversation.find({ participants: uid }).select('_id');
+  const convoIds = convos.map((c) => c._id);
+
+  await Promise.all([
+    User.deleteOne({ _id: uid }),
+    Swipe.deleteMany({ $or: [{ user: uid }, { target: uid }] }),
+    Match.deleteMany({ users: uid }),
+    Block.deleteMany({ $or: [{ blocker: uid }, { blocked: uid }] }),
+    Report.deleteMany({ $or: [{ reporter: uid }, { reportedUser: uid }] }),
+    Notification.deleteMany({ $or: [{ user: uid }, { actor: uid }] }),
+
+    // Every message in the user's conversations, not just the ones they sent —
+    // otherwise the other participant's half survives with no conversation.
+    Message.deleteMany({ conversation: { $in: convoIds } }),
+    Conversation.deleteMany({ _id: { $in: convoIds } }),
+
+    // Feed-side cleanup.
+    Post.deleteMany({ author: uid }),
+    Comment.deleteMany({ $or: [{ author: uid }, { post: { $in: postIds } }] }),
+    SavedPost.deleteMany({ $or: [{ user: uid }, { post: { $in: postIds } }] }),
+    Follow.deleteMany({ $or: [{ follower: uid }, { following: uid }] }),
+  ]);
+
+  // Fire and forget. The account is gone; a Cloudinary failure shouldn't turn
+  // a successful deletion into a 500 the client retries against a dead user.
+  destroyImages(imageUrls);
 
   res.json({ ok: true, deleted: true });
 });
