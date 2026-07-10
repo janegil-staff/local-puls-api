@@ -33,6 +33,7 @@ import {
   register, login, me,
   verifyEmail, resendVerification,
   requestPinReset, resetPin,
+  changePin,
 } from '../controllers/authController.js';
 
 const router = Router();
@@ -145,5 +146,7 @@ router.post('/auth/resend-verification', requireAuth, resendVerification);
 
 router.post('/auth/forgot-pin', authLimiter, requestPinReset);
 router.post('/auth/reset-pin', authLimiter, resetPin);
+
+router.post('/auth/change-pin', requireAuth, authLimiter, changePin);
 
 export default router;

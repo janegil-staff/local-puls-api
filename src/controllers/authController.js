@@ -118,6 +118,41 @@ export async function resetPin(req, res) {
     return res.status(500).json({ error: 'Could not reset PIN' });
   }
 }
+
+// Change the PIN from Settings. Requires the CURRENT pin — the JWT proves the
+// session, not the person. A stolen unlocked phone shouldn't be able to lock
+// the owner out.
+export async function changePin(req, res) {
+  try {
+    const currentPin = String(req.body.currentPin || '').trim();
+    const newPin = String(req.body.newPin || '').trim();
+
+    if (!/^\d{4}$/.test(newPin)) return res.status(400).json({ error: 'PIN must be 4 digits' });
+    if (currentPin === newPin) return res.status(400).json({ error: 'New PIN must be different' });
+
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const ok = await user.checkPin(currentPin);
+    if (!ok) return res.status(401).json({ error: 'Current PIN is incorrect' });
+
+    // setPin writes BOTH pinHash and passwordHash — see the method on the
+    // model. Writing only pinHash would leave checkPassword() accepting the
+    // OLD pin.
+    await user.setPin(newPin);
+
+    // validateBeforeSave: legacy documents carry invalid enum values (e.g.
+    // gender: 'man'), and Mongoose validates the whole document on save, not
+    // just the changed paths. A PIN change has no business validating gender.
+    await user.save({ validateBeforeSave: false });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('changePin error', err);
+    return res.status(500).json({ error: 'Could not change PIN' });
+  }
+}
+
 export async function register(req, res) {
   try {
     const { email, pin, displayName, dob, gender } = req.body;
