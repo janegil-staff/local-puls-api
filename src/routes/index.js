@@ -1,7 +1,7 @@
 // localpulse/server/src/routes/index.js
 import { Router } from 'express';
 import multer from 'multer';
-import { register, login } from '../controllers/authController.js';
+import { register, login, requestPinReset, resetPin } from '../controllers/authController.js';
 import {
   getMe, updateProfile, updatePreferences, updateLocation, deleteAccount,
 } from '../controllers/profileController.js';
@@ -135,5 +135,11 @@ router.post('/chat/conversations/:id/read', requireAuth, markRead);
 router.get('/geocode', requireAuth, geocode);
 router.post('/location', requireAuth, setLocation);
 router.post('/browse-location', requireAuth, setBrowseLocation);
+
+router.get('/auth/verify/:token', verifyEmail);
+router.post('/auth/resend-verification', requireAuth, resendVerification);
+
+router.post('/auth/forgot-pin', authLimiter, requestPinReset);
+router.post('/auth/reset-pin', authLimiter, resetPin);
 
 export default router;

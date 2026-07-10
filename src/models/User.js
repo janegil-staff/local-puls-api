@@ -117,6 +117,15 @@ const userSchema = new mongoose.Schema(
     // Where I'm browsing. Absent until the user picks somewhere.
     browseLocation: { type: pointSchema, default: undefined },
     browseLocationName: { type: String, default: '' },
+
+    emailVerified: { type: Boolean, default: false },
+    emailVerifyToken: { type: String, index: true },
+    emailVerifyExpires: { type: Date },
+
+    pinResetHash: { type: String },
+    pinResetExpires: { type: Date },
+    pinResetAttempts: { type: Number, default: 0 },
+    pinResetRequests: [{ type: Date }],
   },
   { timestamps: true }
 );
@@ -218,6 +227,7 @@ userSchema.methods.toSelf = function toSelf() {
     locationName: this.locationName || '',
     browseLocationName: this.browseLocationName || '',
     hasBrowseLocation: Boolean(this.browseLocation?.coordinates?.length),
+    emailVerified: Boolean(this.emailVerified),
   };
 };
 

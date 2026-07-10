@@ -1,7 +1,124 @@
 // localpulse/server/src/controllers/authController.js
+import crypto from 'crypto';
 import User from '../models/User.js';
 import { signToken } from '../middleware/auth.js';
+import { sendVerificationEmail } from '../lib/mail.js';
+import bcrypt from 'bcryptjs';
+import { sendVerificationEmail, sendPinResetEmail } from '../lib/mail.js';
 
+const RESET_TTL_MS = 10 * 60 * 1000;
+const RESET_MAX_ATTEMPTS = 5;
+const RESET_MAX_REQUESTS = 3;
+const RESET_REQUEST_WINDOW_MS = 60 * 60 * 1000;
+
+// 4 digits, zero-padded. crypto.randomInt is uniform; Math.random is not, and
+// a biased 4-digit code is meaningfully weaker than an unbiased one.
+function newResetCode() {
+  return String(crypto.randomInt(0, 10000)).padStart(4, '0');
+}
+
+// Clear every reset field. Used on success, on exhaustion, and on expiry.
+function clearReset(user) {
+  user.pinResetHash = undefined;
+  user.pinResetExpires = undefined;
+  user.pinResetAttempts = 0;
+}
+const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
+
+function newVerifyToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+// Request a reset code. ALWAYS responds 200, whether or not the email exists —
+// otherwise this endpoint is a user-enumeration oracle.
+export async function requestPinReset(req, res) {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    const user = await User.findOne({ email });
+    if (!user) return res.json({ ok: true });
+
+    // Throttle. Without this, an attacker burns the 5-attempt budget, requests
+    // a fresh code, and repeats — turning a 10,000-space secret into a grind.
+    const now = Date.now();
+    const recent = (user.pinResetRequests || []).filter(
+      (d) => now - new Date(d).getTime() < RESET_REQUEST_WINDOW_MS,
+    );
+    if (recent.length >= RESET_MAX_REQUESTS) {
+      // Still 200 — the caller learns nothing either way.
+      return res.json({ ok: true });
+    }
+
+    const code = newResetCode();
+    user.pinResetHash = await bcrypt.hash(code, 10);
+    user.pinResetExpires = new Date(now + RESET_TTL_MS);
+    user.pinResetAttempts = 0;
+    user.pinResetRequests = [...recent, new Date()];
+    await user.save();
+
+    sendPinResetEmail(user, code);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('requestPinReset error', err);
+    return res.status(500).json({ error: 'Could not send reset code' });
+  }
+}
+
+// Verify the code and set a new PIN in one step. Splitting it into
+// verify-then-set would leave a window where a verified code sits unused, and
+// gains nothing: the client already has both values by the time it submits.
+export async function resetPin(req, res) {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const code = String(req.body.code || '').trim();
+    const pin = String(req.body.pin || '').trim();
+
+    if (!email || !code) return res.status(400).json({ error: 'Email and code are required' });
+    if (!/^\d{4}$/.test(pin)) return res.status(400).json({ error: 'PIN must be 4 digits' });
+
+    const user = await User.findOne({ email });
+
+    // Generic message on every failure path below: a distinct "no such account"
+    // would leak which emails are registered.
+    const invalid = () => res.status(400).json({ error: 'Invalid or expired code' });
+
+    if (!user || !user.pinResetHash || !user.pinResetExpires) return invalid();
+
+    if (user.pinResetExpires.getTime() < Date.now()) {
+      clearReset(user);
+      await user.save();
+      return invalid();
+    }
+
+    const ok = await bcrypt.compare(code, user.pinResetHash);
+    if (!ok) {
+      user.pinResetAttempts = (user.pinResetAttempts || 0) + 1;
+      // Destroy the code rather than merely counting. A 4-digit secret cannot
+      // survive unbounded guessing, and a lockout that only delays is not a
+      // lockout.
+      if (user.pinResetAttempts >= RESET_MAX_ATTEMPTS) clearReset(user);
+      await user.save();
+      return invalid();
+    }
+
+    // setPin writes BOTH pinHash and passwordHash — see the method on the
+    // model. Writing only pinHash would leave checkPassword() accepting the
+    // OLD pin, so the reset would appear to succeed while the previous
+    // credential still logged in.
+    await user.setPin(pin);
+    clearReset(user);
+    user.pinResetRequests = [];
+    await user.save();
+
+    // Log them straight in. They just proved control of the inbox and set a
+    // fresh credential; a second login prompt is friction for no security.
+    const token = signToken(user._id);
+    return res.json({ token, user: user.toPublic() });
+  } catch (err) {
+    console.error('resetPin error', err);
+    return res.status(500).json({ error: 'Could not reset PIN' });
+  }
+}
 export async function register(req, res) {
   try {
     const { email, pin, displayName, dob, gender } = req.body;
@@ -13,10 +130,7 @@ export async function register(req, res) {
     if (!pin) {
       return res.status(400).json({ error: 'A PIN is required' });
     }
-    if (pin && pin.length !== 4) {
-      return res.status(400).json({ error: 'Password must be at 4 characters' });
-    }
-    if (pin != null && !/^\d{4,6}$/.test(String(pin))) {
+    if (!/^\d{4}$/.test(String(pin))) {
       return res.status(400).json({ error: 'PIN must be 4 digits' });
     }
 
@@ -44,12 +158,20 @@ export async function register(req, res) {
     const user = new User({ username, email, displayName: displayName || username });
     if (dob) user.dob = dob;
     if (gender) user.gender = gender;
-    // passwordHash is required; when there's no password, use the PIN as the
-    // login credential (login already accepts either password or PIN).
+
+    // setPin writes BOTH pinHash and passwordHash — see the method on the
+    // model. There is no separate password; login accepts the PIN via either
+    // path. Calling setPassword here as well would be a third redundant bcrypt
+    // round at cost 12 (~250ms) for the same value.
     await user.setPin(String(pin));
-    await user.setPassword(String(pin));
-    if (pin != null) await user.setPin(pin);
+
+    user.emailVerifyToken = newVerifyToken();
+    user.emailVerifyExpires = new Date(Date.now() + VERIFY_TTL_MS);
     await user.save();
+
+    // Fire and forget. Mail failures are logged inside sendVerificationEmail;
+    // the account exists and the token is returned regardless.
+    sendVerificationEmail(user, user.emailVerifyToken);
 
     const token = signToken(user._id);
     return res.status(201).json({ token, user: user.toPublic() });
@@ -88,4 +210,53 @@ export async function me(req, res) {
   const user = await User.findById(req.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   return res.json({ user: user.toPublic() });
+}
+
+// Clicked from the email. Returns HTML, not JSON — this opens in a browser.
+export async function verifyEmail(req, res) {
+  const { token } = req.params;
+
+  const user = await User.findOne({
+    emailVerifyToken: token,
+    emailVerifyExpires: { $gt: new Date() },
+  });
+
+  if (!user) {
+    return res.status(400).send(page('Link expired', 'This confirmation link is invalid or has expired. Request a new one from the app.'));
+  }
+
+  user.emailVerified = true;
+  user.emailVerifyToken = undefined;
+  user.emailVerifyExpires = undefined;
+  await user.save();
+
+  return res.send(page('Email confirmed', 'You can close this window and return to LocalPulse.'));
+}
+
+// Resend the verification email. Authenticated: the token in the request
+// already proves who is asking, so there's no user enumeration to worry about.
+export async function resendVerification(req, res) {
+  const user = await User.findById(req.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.emailVerified) return res.json({ ok: true, alreadyVerified: true });
+
+  user.emailVerifyToken = newVerifyToken();
+  user.emailVerifyExpires = new Date(Date.now() + VERIFY_TTL_MS);
+  await user.save();
+
+  sendVerificationEmail(user, user.emailVerifyToken);
+  return res.json({ ok: true });
+}
+
+function page(title, body) {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;background:#111;color:#eee;
+             display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+  <div style="text-align:center;padding:24px">
+    <h1 style="font-size:22px;margin:0 0 12px">${title}</h1>
+    <p style="color:#999;margin:0">${body}</p>
+  </div>
+</body></html>`;
 }
