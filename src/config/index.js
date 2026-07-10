@@ -41,4 +41,7 @@ export const config = {
     max: Number(process.env.RATE_LIMIT_MAX) || 300,
     authMax: Number(process.env.RATE_LIMIT_AUTH_MAX) || 20,
   },
+
+  resendApiKey: process.env.RESEND_API_KEY || '',
+  mailFrom: process.env.MAIL_FROM || 'LocalPulse <onboarding@resend.dev>',
 };
