@@ -1,7 +1,7 @@
 // localpulse/server/src/routes/index.js
 import { Router } from 'express';
 import multer from 'multer';
-import { register, login, requestPinReset, resetPin } from '../controllers/authController.js';
+
 import {
   getMe, updateProfile, updatePreferences, updateLocation, deleteAccount,
 } from '../controllers/profileController.js';
