@@ -17,11 +17,18 @@ const postSchema = new mongoose.Schema(
     },
     placeName: { type: String, default: '' }, // human label, e.g. "Bergen sentrum"
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    location: {
+      type: {
+        type: { type: String, enum: ['Point'] },
+        coordinates: { type: [Number] },
+      },
+      default: undefined,
+    },
   },
   { timestamps: true }
 );
 
-postSchema.index({ location: '2dsphere' });
+postSchema.index({ location: '2dsphere' }, { sparse: true });
 postSchema.index({ createdAt: -1 });
 
 // Serialize for the client, including whether *this* viewer liked it.

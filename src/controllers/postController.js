@@ -29,12 +29,15 @@ export const createPost = asyncHandler(async (req, res) => {
   res.status(201).json({ post: post.toClient(req.userId) });
 });
 
-// Feed: near-me when coords given, else recent. Excludes blocked users both ways.
+// Feed: always newest-first. When coords are given, posts within range are
+// included AND posts with no location (never defaulted to [0,0] anymore) — so
+// nothing is silently stranded off-map. $geoWithin filters without imposing
+// distance ordering, unlike $near, so the createdAt sort actually applies.
 export const getFeed = asyncHandler(async (req, res) => {
   const { lng, lat, radius, before, limit } = req.query;
   const lim = Math.min(Number(limit) || 20, 50);
 
-  // Build a set of user ids to exclude (people I blocked + people who blocked me).
+  // Exclude people I blocked + people who blocked me.
   let excludeIds = [];
   if (req.userId) {
     const blocks = await Block.find({
@@ -50,23 +53,27 @@ export const getFeed = asyncHandler(async (req, res) => {
     ...(before ? { createdAt: { $lt: new Date(before) } } : {}),
   };
 
-  let posts;
+  // 6378137 = Earth's radius in metres ($centerSphere wants radians).
+  let query = base;
   if (lng != null && lat != null) {
     const meters = Number(radius) || 50000;
-    posts = await Post.find({
+    query = {
       ...base,
-      location: {
-        $near: {
-          $geometry: { type: 'Point', coordinates: [Number(lng), Number(lat)] },
-          $maxDistance: meters,
+      $or: [
+        {
+          location: {
+            $geoWithin: { $centerSphere: [[Number(lng), Number(lat)], meters / 6378137] },
+          },
         },
-      },
-    })
-      .limit(lim)
-      .populate('author');
-  } else {
-    posts = await Post.find(base).sort({ createdAt: -1 }).limit(lim).populate('author');
+        { location: { $exists: false } },
+      ],
+    };
   }
+
+  const posts = await Post.find(query)
+    .sort({ createdAt: -1 })
+    .limit(lim)
+    .populate('author');
 
   // Annotate saved state for the viewer.
   let savedSet = new Set();
