@@ -2,7 +2,6 @@
 import crypto from 'crypto';
 import User from '../models/User.js';
 import { signToken } from '../middleware/auth.js';
-import { sendVerificationEmail } from '../lib/mail.js';
 import bcrypt from 'bcryptjs';
 import { sendVerificationEmail, sendPinResetEmail } from '../lib/mail.js';
 
