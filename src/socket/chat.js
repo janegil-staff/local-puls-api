@@ -2,9 +2,9 @@
 import jwt from 'jsonwebtoken';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
-import Block from '../models/Block.js';
 import User from '../models/User.js';
 import { config } from '../config/index.js';
+import { blockedBetween, canSeeConversation } from '../lib/blocks.js';
 
 // The uploader returns absolute URLs; refuse anything else so a client can't
 // make us persist a link to an arbitrary host and render it in every bubble.
@@ -53,17 +53,6 @@ function authSocket(socket, next) {
   }
 }
 
-// Is there a block in either direction between two users?
-async function blockedBetween(a, b) {
-  const block = await Block.findOne({
-    $or: [
-      { blocker: a, blocked: b },
-      { blocker: b, blocked: a },
-    ],
-  });
-  return Boolean(block);
-}
-
 // Shared by chat:send and chat:sendImage. Loads the conversation, runs the
 // participant and block checks, and returns { convo, other } or an error
 // string — never both.
@@ -108,6 +97,9 @@ async function deliver(io, userId, convo, fields, preview) {
   // Notify participants not currently in the room (badge/notification).
   // Include the conversation status so the client can route the ping to
   // Messages vs Requests.
+  //
+  // A block between sender and recipient is impossible here — loadSendable
+  // rejected it before we were called — so no further filtering is needed.
   convo.participants
     .filter((p) => String(p) !== String(userId))
     .forEach((p) =>
@@ -134,8 +126,30 @@ export function registerChat(io) {
     socket.on('presence:ping', () => touchLastSeen(socket.userId));
 
     // Join a conversation room to receive its messages live.
-    socket.on('chat:join', ({ conversationId }) => {
-      if (conversationId) socket.join(`convo:${conversationId}`);
+    //
+    // GUARDED. This previously joined any room by ID with no checks at all: a
+    // socket could subscribe to two strangers' conversation by guessing an
+    // ObjectId, and a blocked user stayed subscribed to the thread they were
+    // blocked from — still receiving every message and typing event, since
+    // only the SEND path checked blocks, never the LISTEN path.
+    //
+    // The ack is new. A client that ignores it degrades to a chat that never
+    // updates rather than one that leaks.
+    socket.on('chat:join', async ({ conversationId }, ack) => {
+      if (!conversationId) return ack?.({ error: 'No conversation' });
+      try {
+        const convo = await Conversation.findById(conversationId);
+        if (!(await canSeeConversation(socket.userId, convo))) {
+          // Same error whether it doesn't exist, isn't theirs, or is blocked.
+          // Don't confirm the thread exists to someone who can't see it.
+          return ack?.({ error: 'Conversation not found' });
+        }
+        socket.join(`convo:${conversationId}`);
+        ack?.({ ok: true });
+      } catch (err) {
+        console.error('chat:join error', err);
+        ack?.({ error: 'Could not join' });
+      }
     });
 
     socket.on('chat:leave', ({ conversationId }) => {
@@ -183,9 +197,19 @@ export function registerChat(io) {
       }
     });
 
-    // Typing indicator.
-    socket.on('chat:typing', ({ conversationId }) => {
-      socket.to(`convo:${conversationId}`).emit('chat:typing', { userId: socket.userId });
+    // Typing indicator. Guarded like send: an unguarded emit lets anyone
+    // broadcast into any room by ID, and lets someone you blocked watch you
+    // type. Reuses loadSendable rather than a bare block check, so a
+    // non-participant is rejected too.
+    socket.on('chat:typing', async ({ conversationId }) => {
+      if (!conversationId) return;
+      try {
+        const { error } = await loadSendable(socket.userId, conversationId);
+        if (error) return;
+        socket.to(`convo:${conversationId}`).emit('chat:typing', { userId: socket.userId });
+      } catch (err) {
+        console.error('chat:typing error', err);
+      }
     });
   });
 }

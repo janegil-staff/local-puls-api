@@ -1,17 +1,33 @@
 // localpulse/server/src/controllers/chatController.js
+//
+// Block checks come from lib/blocks.js — do NOT redeclare them here. This file
+// previously carried its own copies, which is how getMessages ended up with no
+// check at all while openConversation had one.
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
-import Block from '../models/Block.js';
+import { blockedBetween, blockedIdsFor } from '../lib/blocks.js';
 
-// Helper: is there a block in either direction between two users?
-async function blockedBetween(a, b) {
-  const block = await Block.findOne({
-    $or: [
-      { blocker: a, blocked: b },
-      { blocker: b, blocked: a },
-    ],
-  });
-  return Boolean(block);
+// Load a conversation and assert the viewer may see it: they must be a
+// participant, and there must be no block in either direction.
+//
+// Returns { convo } on success, or { status, error } to send. 404 rather than
+// 403 for blocks — a blocked user should not learn the thread still exists.
+//
+// EVERY handler taking a :id must go through this. getMessages previously did
+// no participation check at all: any authenticated user could read any
+// conversation by guessing its ObjectId.
+async function loadVisibleConversation(convoId, viewerId) {
+  const convo = await Conversation.findById(convoId);
+  if (!convo) return { status: 404, error: 'Conversation not found' };
+
+  const isParticipant = convo.participants.some((p) => String(p) === String(viewerId));
+  if (!isParticipant) return { status: 404, error: 'Conversation not found' };
+
+  const other = convo.participants.find((p) => String(p) !== String(viewerId));
+  if (other && (await blockedBetween(viewerId, other))) {
+    return { status: 404, error: 'Conversation not found' };
+  }
+  return { convo };
 }
 
 // Shape a conversation for the client (other participant + meta).
@@ -32,8 +48,11 @@ function shapeConvo(c, viewerId) {
 // unread count (messages the viewer hasn't read, not sent by them).
 export async function listConversations(req, res) {
   try {
+    // $all pins the viewer as a participant; $nin drops any conversation whose
+    // other participant is blocked. Correct for 2-party threads.
+    const blockedIds = await blockedIdsFor(req.userId);
     const convos = await Conversation.find({
-      participants: req.userId,
+      participants: { $all: [req.userId], $nin: blockedIds },
       status: { $ne: 'pending' },
     })
       .sort({ lastMessageAt: -1 })
@@ -57,10 +76,13 @@ export async function listConversations(req, res) {
 }
 
 // Total unread across all accepted conversations — for the tab badge.
+// Must exclude blocked threads, or the badge counts messages the user cannot
+// open: a permanent unread count with nowhere to go.
 export async function chatUnreadCount(req, res) {
   try {
+    const blockedIds = await blockedIdsFor(req.userId);
     const convos = await Conversation.find({
-      participants: req.userId,
+      participants: { $all: [req.userId], $nin: blockedIds },
       status: { $ne: 'pending' },
     }).select('_id');
     const ids = convos.map((c) => c._id);
@@ -79,13 +101,11 @@ export async function chatUnreadCount(req, res) {
 // Mark all messages in a conversation as read by the viewer.
 export async function markRead(req, res) {
   try {
-    const convo = await Conversation.findById(req.params.id);
-    if (!convo) return res.status(404).json({ error: 'Conversation not found' });
-    if (!convo.participants.some((p) => String(p) === String(req.userId))) {
-      return res.status(403).json({ error: 'Not your conversation' });
-    }
+    const { convo, status, error } = await loadVisibleConversation(req.params.id, req.userId);
+    if (!convo) return res.status(status).json({ error });
+
     await Message.updateMany(
-      { conversation: req.params.id, readBy: { $ne: req.userId } },
+      { conversation: convo._id, readBy: { $ne: req.userId } },
       { $addToSet: { readBy: req.userId } }
     );
     return res.json({ ok: true });
@@ -100,8 +120,9 @@ export async function markRead(req, res) {
 // outgoing requests here.
 export async function listRequests(req, res) {
   try {
+    const blockedIds = await blockedIdsFor(req.userId);
     const convos = await Conversation.find({
-      participants: req.userId,
+      participants: { $all: [req.userId], $nin: blockedIds },
       status: 'pending',
       initiator: { $ne: req.userId },
     })
@@ -145,10 +166,9 @@ export async function openConversation(req, res) {
 // Recipient accepts a pending conversation → moves it to the main inbox.
 export async function acceptConversation(req, res) {
   try {
-    const convo = await Conversation.findById(req.params.id);
-    if (!convo) return res.status(404).json({ error: 'Conversation not found' });
-    const isParticipant = convo.participants.some((p) => String(p) === String(req.userId));
-    if (!isParticipant) return res.status(403).json({ error: 'Not your conversation' });
+    const { convo, status, error } = await loadVisibleConversation(req.params.id, req.userId);
+    if (!convo) return res.status(status).json({ error });
+
     // Only the recipient (not the initiator) can accept.
     if (String(convo.initiator) === String(req.userId)) {
       return res.status(400).json({ error: 'You started this conversation' });
@@ -165,10 +185,13 @@ export async function acceptConversation(req, res) {
 // Message history for a conversation (paginated with ?before=).
 export async function getMessages(req, res) {
   try {
+    const { convo, status, error } = await loadVisibleConversation(req.params.id, req.userId);
+    if (!convo) return res.status(status).json({ error });
+
     const { before, limit } = req.query;
     const lim = Math.min(Number(limit) || 30, 50);
     const messages = await Message.find({
-      conversation: req.params.id,
+      conversation: convo._id,
       ...(before ? { createdAt: { $lt: new Date(before) } } : {}),
     })
       .sort({ createdAt: -1 })
