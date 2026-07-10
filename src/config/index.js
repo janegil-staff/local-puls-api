@@ -44,4 +44,5 @@ export const config = {
 
   resendApiKey: process.env.RESEND_API_KEY || '',
   mailFrom: process.env.MAIL_FROM || 'LocalPulse <onboarding@resend.dev>',
+  clientUrl: process.env.CLIENT_URL,
 };

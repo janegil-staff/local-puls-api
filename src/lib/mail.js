@@ -26,9 +26,17 @@ async function send({ to, subject, html }) {
   }
 }
 
+// VERIFY_URL_CLIENT_DOMAIN_V1 — the link must point at the marketing site
+// (qup.dating), NOT the raw API host. Two reasons:
+//   1. Google Safe Browsing flags bare *.ondigitalocean.app subdomains serving
+//      long-hex-token paths from emails — it's the phishing signature. A link
+//      whose domain matches the sending domain (noreply@qup.dating) does not.
+//   2. Clicking an API endpoint dumps raw JSON at the user. The Next page at
+//      /verify calls the endpoint and renders a human-readable result.
+// Requires CLIENT_URL=https://qup.dating in the server env.
 export function verifyUrl(token) {
-  const base = (config.publicUrl || '').replace(/\/$/, '');
-  return `${base}/api/auth/verify/${token}`;
+  const base = (config.clientUrl || '').replace(/\/$/, '');
+  return `${base}/verifyLP?token=${encodeURIComponent(token)}`;
 }
 
 export async function sendVerificationEmail(user, token) {
