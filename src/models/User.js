@@ -241,6 +241,7 @@ userSchema.methods.toCard = function toCard() {
     interests: this.interests || [],
     neighborhood: this.neighborhood,
     locationName: this.locationName || this.neighborhood || '',
+    emailVerified: Boolean(this.emailVerified),
     online: this.visibleOnline(),
   };
 };

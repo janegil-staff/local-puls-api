@@ -119,7 +119,7 @@ export const getDeck = asyncHandler(async (req, res) => {
     const showsOnline = u.showOnlineStatus ?? true;
     const showsDistance = u.showDistance ?? true;
 
-    const card = {
+const card = {
       id: u._id,
       username: u.username,
       displayName: u.displayName || u.username,
@@ -129,11 +129,11 @@ export const getDeck = asyncHandler(async (req, res) => {
       interests: u.interests || [],
       neighborhood: u.neighborhood,
       locationName: u.locationName || u.neighborhood || '',
+      emailVerified: Boolean(u.emailVerified),
       online: showsOnline
         ? Boolean(u.lastSeenAt && now - new Date(u.lastSeenAt).getTime() < ONLINE_MS)
         : false,
     };
-
     // Omit the key entirely rather than sending null. A client that renders
     // `{distanceKm} km` would print "null km"; an absent key is falsy and the
     // row simply doesn't appear.
