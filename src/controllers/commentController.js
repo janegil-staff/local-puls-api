@@ -16,20 +16,33 @@ export const addComment = asyncHandler(async (req, res) => {
   const { text } = req.body;
   if (!text || !text.trim()) throw ApiError.badRequest('Comment text required');
 
-  const post = await Post.findById(req.params.postId).populate('author');
+  const post = await Post.findById(req.params.postId);
   if (!post) throw ApiError.notFound('Post not found');
 
-  const comment = await Comment.create({ post: post._id, author: req.userId, text: text.trim() });
+  const comment = await Comment.create({
+    post: post._id,
+    author: req.userId,
+    text: text.trim(),
+  });
   await comment.populate('author');
 
-  await notify({
-    userId: post.author._id,
-    actorId: req.userId,
-    type: 'comment',
-    postId: post._id,
-    title: 'New comment',
-    body: text.trim().slice(0, 80),
-  });
+  // Notification must never fail the comment. Wrapped so a bad push token,
+  // a deleted post author, or a notify bug logs instead of 500-ing a
+  // successful write.
+  try {
+    if (post.author && String(post.author) !== String(req.userId)) {
+      await notify({
+        userId: post.author,
+        actorId: req.userId,
+        type: 'comment',
+        postId: post._id,
+        title: 'New comment',
+        body: text.trim().slice(0, 80),
+      });
+    }
+  } catch (err) {
+    console.error('comment notify failed', err);
+  }
 
   res.status(201).json({ comment: comment.toClient() });
 });
