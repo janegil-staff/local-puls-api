@@ -47,6 +47,23 @@ const pointSchema = new mongoose.Schema(
   { _id: false },
 );
 
+// A stored photo: the delivery URL, plus the Cloudinary public_id needed to
+// destroy it when the account or the photo is deleted.
+//
+// `publicId` is NOT required. Documents written before this schema existed hold
+// bare URL strings, and the migration below promotes them by parsing the id out
+// of the URL — a parse that fails on transformed URLs and leaves publicId unset.
+// Requiring it would make those users unable to save their profile at all. The
+// deletion path skips entries without one, orphaning the asset; a storage cost,
+// not a correctness bug.
+const photoSchema = new mongoose.Schema(
+  {
+    url: { type: String, required: true },
+    publicId: { type: String },
+  },
+  { _id: false },
+);
+
 const userSchema = new mongoose.Schema(
   {
     username: { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 24 },
@@ -64,7 +81,11 @@ const userSchema = new mongoose.Schema(
     // ── Profile ─────────────────────────────────────────
     dob: { type: Date },                 // date of birth (age gate: 18+)
     gender: { type: String, enum: GENDERS },
-    photos: [{ type: String }],          // ordered photo URLs (first = primary)
+    // Ordered; photos[0] is the primary. Each entry is { url, publicId } —
+    // see photoSchema. Legacy documents hold bare strings; normalizePhotos()
+    // below converts them on read, and the migration script converts them at
+    // rest.
+    photos: [photoSchema],
     interests: [{ type: String }],       // free tags, e.g. "hiking", "coffee"
     neighborhood: { type: String, default: '' }, // local flavor
 
@@ -85,14 +106,17 @@ const userSchema = new mongoose.Schema(
       ageMin: { type: Number, default: 18, min: 18 },
       ageMax: { type: Number, default: 99 },
 
-      // null = "Anywhere", no distance cut-off.
+      // null = "Anywhere", no distance cut-off. This is the DEFAULT: a new
+      // user in a sparse area would otherwise land on an empty Discover screen
+      // and churn before ever finding the setting. $geoNear still returns
+      // nearest-first, so a user in a dense area sees local people regardless.
       //
       // Deliberately NO `min`/`max` here. Mongoose's min validator RUNS on
       // null (null < 1 is true) rather than skipping it, so `min: 1` would
       // reject the very value that means "no limit" — save() throws, the
       // request 500s, and the client's toggle springs back. Range is enforced
       // in profileController.updatePreferences, which knows null is legal.
-       maxDistanceKm: { type: Number, default: null },
+      maxDistanceKm: { type: Number, default: null },
     },
 
     // Whether onboarding is complete enough to appear in discovery.
@@ -176,14 +200,31 @@ userSchema.methods.visibleOnline = function visibleOnline() {
   return this.isOnline();
 };
 
+// Every serializer below goes through this. A document may hold either the old
+// bare-string form or the new { url, publicId } form; the client should never
+// have to know which. Legacy strings come back with publicId: null.
+export function normalizePhotos(photos) {
+  return (photos || []).map((p) => (
+    typeof p === 'string'
+      ? { url: p, publicId: null }
+      : { url: p.url, publicId: p.publicId ?? null }
+  ));
+}
+
+// The first photo's URL, or ''. Used for avatars.
+function primaryUrl(photos) {
+  const first = normalizePhotos(photos)[0];
+  return first?.url || '';
+}
+
 // Minimal public shape — never leak hash/email/dob.
 userSchema.methods.toPublic = function toPublic() {
   return {
     id: this._id,
     username: this.username,
     displayName: this.displayName || this.username,
-    photos: this.photos || [],
-    avatarUrl: (this.photos && this.photos[0]) || '',
+    photos: normalizePhotos(this.photos),
+    avatarUrl: primaryUrl(this.photos),
     online: this.visibleOnline(),
   };
 };
@@ -196,7 +237,7 @@ userSchema.methods.toCard = function toCard() {
     displayName: this.displayName || this.username,
     age: ageFromDob(this.dob),
     bio: this.bio,
-    photos: this.photos || [],
+    photos: normalizePhotos(this.photos),
     interests: this.interests || [],
     neighborhood: this.neighborhood,
     locationName: this.locationName || this.neighborhood || '',
@@ -216,7 +257,7 @@ userSchema.methods.toSelf = function toSelf() {
     dob: this.dob,
     age: ageFromDob(this.dob),
     gender: this.gender,
-    photos: this.photos || [],
+    photos: normalizePhotos(this.photos),
     interests: this.interests || [],
     neighborhood: this.neighborhood,
     preferences: this.preferences,

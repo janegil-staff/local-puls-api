@@ -1,5 +1,5 @@
 // localpulse/server/src/controllers/profileController.js
-import User, { GENDERS, ORIENT_SHOW } from '../models/User.js';
+import User, { GENDERS, ORIENT_SHOW, normalizePhotos } from '../models/User.js';
 import Swipe from '../models/Swipe.js';
 import Match from '../models/Match.js';
 import Message from '../models/Message.js';
@@ -12,9 +12,9 @@ import Comment from '../models/Comment.js';
 import Follow from '../models/Follow.js';
 import SavedPost from '../models/SavedPost.js';
 import { snapCoords } from './locationController.js';
+import { destroyImages, publicIdFromUrl } from '../lib/cloudinary.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/ApiError.js';
-import { destroyImages } from '../lib/cloudinary.js';
 
 const MIN_AGE = 18;
 const MAX_AGE = 99;
@@ -28,6 +28,22 @@ const SUPPORTED_LANGS = ['no', 'en', 'nl', 'fr', 'de', 'it', 'sv', 'da', 'fi', '
 
 function ageFromDob(dob) {
   return Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000));
+}
+
+// Accept either the new { url, publicId } form or a bare URL string, and always
+// store the object form. A client that hasn't shipped the new upload response
+// yet still works; its photos just carry a parsed (or null) publicId.
+function coercePhotos(photos) {
+  if (!Array.isArray(photos)) throw ApiError.badRequest('photos must be an array');
+  return photos.slice(0, 6).map((p) => {
+    if (typeof p === 'string') {
+      return { url: p, publicId: publicIdFromUrl(p) };
+    }
+    if (!p || typeof p.url !== 'string' || !p.url) {
+      throw ApiError.badRequest('each photo needs a url');
+    }
+    return { url: p.url, publicId: p.publicId ?? publicIdFromUrl(p.url) };
+  });
 }
 
 // Return own full profile.
@@ -58,10 +74,21 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
   if (displayName !== undefined) user.displayName = displayName;
   if (bio !== undefined) user.bio = bio;
+
+  // Photos are replace-in-full, so any photo the client dropped from the array
+  // is now orphaned in Cloudinary. Destroy the difference — this is the ONLY
+  // place a single photo gets removed, since there's no dedicated endpoint.
   if (photos !== undefined) {
-    if (!Array.isArray(photos)) throw ApiError.badRequest('photos must be an array');
-    user.photos = photos.slice(0, 6);
+    const next = coercePhotos(photos);
+    const nextUrls = new Set(next.map((p) => p.url));
+    const removed = normalizePhotos(user.photos)
+      .filter((p) => !nextUrls.has(p.url))
+      .map((p) => p.publicId);
+
+    user.photos = next;
+    if (removed.length) destroyImages(removed); // fire and forget
   }
+
   if (interests !== undefined) user.interests = (interests || []).slice(0, 10);
   if (neighborhood !== undefined) user.neighborhood = neighborhood;
 
@@ -111,7 +138,11 @@ export const updateProfile = asyncHandler(async (req, res) => {
   // Profile counts as complete when the essentials are present.
   user.profileComplete = Boolean(user.dob && user.gender);
 
-  await user.save();
+  // validateBeforeSave: legacy documents carry invalid enum values (notably
+  // gender: 'man'), and Mongoose validates the WHOLE document on save, not just
+  // the changed paths — so an unrelated field can 500 a bio update. The fields
+  // this handler writes are validated above by hand.
+  await user.save({ validateBeforeSave: false });
   res.json({ profile: user.toSelf() });
 });
 
@@ -149,7 +180,7 @@ export const updatePreferences = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Minimum age cannot exceed maximum age');
   }
 
-  await user.save();
+  await user.save({ validateBeforeSave: false });
   res.json({ preferences: user.preferences });
 });
 
@@ -190,56 +221,32 @@ export const updateLocation = asyncHandler(async (req, res) => {
 });
 
 // Full account deletion — App Store Guideline 5.1.1 requires this in-app.
-// Removes the user and all data derived from them.
-export const deleteAccount = asyncHandler(async (req, res) => {
-  const uid = req.userId;
-
-  const matches = await Match.find({ users: uid }).select('conversation');
-  const convoIds = matches.map((m) => m.conversation).filter(Boolean);
-
-  await Promise.all([
-    User.deleteOne({ _id: uid }),
-    Swipe.deleteMany({ $or: [{ user: uid }, { target: uid }] }),
-    Match.deleteMany({ users: uid }),
-    Block.deleteMany({ $or: [{ blocker: uid }, { blocked: uid }] }),
-    Report.deleteMany({ $or: [{ reporter: uid }, { reportedUser: uid }] }),
-    Notification.deleteMany({ $or: [{ user: uid }, { actor: uid }] }),
-    Message.deleteMany({ sender: uid }),
-    Conversation.deleteMany({ _id: { $in: convoIds } }),
-    // Feed-side cleanup (hybrid app).
-    Post.deleteMany({ author: uid }),
-    Comment.deleteMany({ author: uid }),
-    Follow.deleteMany({ $or: [{ follower: uid }, { following: uid }] }),
-    SavedPost.deleteMany({ user: uid }),
-  ]);
-
-  res.json({ ok: true, deleted: true });
-});
-
-// Full account deletion — App Store Guideline 5.1.1 requires this in-app.
 // Removes the user, all data derived from them, and their uploaded images.
 export const deleteAccount = asyncHandler(async (req, res) => {
   const uid = req.userId;
 
-  // Collect image URLs BEFORE deleting the documents that hold them.
+  // Collect image identifiers BEFORE deleting the documents that hold them.
   const [user, posts, messages] = await Promise.all([
     User.findById(uid).select('photos'),
     Post.find({ author: uid }).select('imageUrl'),
     Message.find({ sender: uid, imageUrl: { $exists: true } }).select('imageUrl'),
   ]);
 
-  const imageUrls = [
-    ...(user?.photos ?? []),
-    ...posts.map((p) => p.imageUrl).filter(Boolean),
-    ...messages.map((m) => m.imageUrl).filter(Boolean),
+  // Profile photos carry their publicId. Post and Message images are still
+  // bare URLs, so those have to be parsed — see the note in cloudinary.js.
+  const publicIds = [
+    ...normalizePhotos(user?.photos).map((p) => p.publicId),
+    ...posts.map((p) => publicIdFromUrl(p.imageUrl)),
+    ...messages.map((m) => publicIdFromUrl(m.imageUrl)),
   ];
 
   // Comments on the user's posts, and saves of them, would otherwise be
   // orphaned — Post.deleteMany doesn't cascade.
   const postIds = posts.map((p) => p._id);
 
-  // Conversations the user is a participant in. The old code went via Match,
-  // which misses conversations created by openConversation() without a match.
+  // Conversations the user participates in. Going via Match (as this used to)
+  // misses every conversation created by openConversation() without a match —
+  // which, in an open-messaging app, is most of them.
   const convos = await Conversation.find({ participants: uid }).select('_id');
   const convoIds = convos.map((c) => c._id);
 
@@ -261,11 +268,15 @@ export const deleteAccount = asyncHandler(async (req, res) => {
     Comment.deleteMany({ $or: [{ author: uid }, { post: { $in: postIds } }] }),
     SavedPost.deleteMany({ $or: [{ user: uid }, { post: { $in: postIds } }] }),
     Follow.deleteMany({ $or: [{ follower: uid }, { following: uid }] }),
+
+    // Likes on OTHER people's posts. Those posts survive, so the id has to be
+    // pulled out or their likeCount stays inflated forever.
+    Post.updateMany({ likes: uid }, { $pull: { likes: uid } }),
   ]);
 
-  // Fire and forget. The account is gone; a Cloudinary failure shouldn't turn
-  // a successful deletion into a 500 the client retries against a dead user.
-  destroyImages(imageUrls);
+  // Fire and forget. The account is gone; a Cloudinary failure shouldn't turn a
+  // successful deletion into a 500 the client retries against a dead user.
+  destroyImages(publicIds);
 
   res.json({ ok: true, deleted: true });
 });

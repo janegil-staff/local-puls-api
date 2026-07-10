@@ -15,7 +15,7 @@
 // and the showDistance branch below. If you add a flag to toCard(), add it
 // here too, or it will leak through Discover.
 import mongoose from 'mongoose';
-import User, { GENDERS } from '../models/User.js';
+import User, { GENDERS, normalizePhotos } from '../models/User.js';
 import Block from '../models/Block.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/ApiError.js';
@@ -125,7 +125,7 @@ export const getDeck = asyncHandler(async (req, res) => {
       displayName: u.displayName || u.username,
       age: u.dob ? Math.floor((now - new Date(u.dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
       bio: u.bio,
-      photos: u.photos || [],
+      photos: normalizePhotos(u.photos),
       interests: u.interests || [],
       neighborhood: u.neighborhood,
       locationName: u.locationName || u.neighborhood || '',
