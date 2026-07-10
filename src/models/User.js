@@ -92,7 +92,7 @@ const userSchema = new mongoose.Schema(
       // reject the very value that means "no limit" — save() throws, the
       // request 500s, and the client's toggle springs back. Range is enforced
       // in profileController.updatePreferences, which knows null is legal.
-      maxDistanceKm: { type: Number, default: 50 },
+       maxDistanceKm: { type: Number, default: null },
     },
 
     // Whether onboarding is complete enough to appear in discovery.

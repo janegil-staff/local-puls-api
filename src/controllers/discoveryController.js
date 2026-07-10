@@ -67,9 +67,10 @@ export const getDeck = asyncHandler(async (req, res) => {
   const prefs = me.preferences || {};
   const limit = Math.min(Number(req.query.limit) || 40, 60);
 
-  // `null` means "Anywhere" — no distance cut-off. Only `undefined` (field
-  // never written) falls back to 50. `??` would collapse null into the
-  // default and make the omission below unreachable.
+// `null` means "Anywhere" — no distance cut-off, and the default for new
+  // accounts. Only `undefined` (field never written, i.e. a document created
+  // before this path existed) falls back to 50. `??` would collapse null into
+  // the default and make the omission below unreachable.
   const maxKm = prefs.maxDistanceKm === undefined ? 50 : prefs.maxDistanceKm;
 
   const blocks = await Block.find({ $or: [{ blocker: me._id }, { blocked: me._id }] });
