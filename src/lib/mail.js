@@ -6,6 +6,7 @@
 // nuisance, not a reason to 500.
 import { Resend } from 'resend';
 import { config } from '../config/index.js';
+import User from '../models/User.js';
 
 const resend = config.resendApiKey ? new Resend(config.resendApiKey) : null;
 
@@ -83,6 +84,57 @@ export async function sendPinResetEmail(user, code) {
           This code expires in 10 minutes and can be used once. If you didn't ask to
           reset your PIN, someone may know your email address — you can ignore this,
           your account is unchanged.
+        </p>
+      </div>
+    `,
+  });
+}
+
+// ─── Report alerts ──────────────────────────────────────────────────────────
+// Emails the admin address when a user or post is reported, so reports don't
+// sit unseen in the DB. Best-effort like every other send here: a mail failure
+// must never fail the report itself (moderationController calls this with
+// .catch(() => {})).
+//
+// Enriches the alert with reporter/target usernames — a bare ObjectId email is
+// useless at review time. Lookups are cheap and best-effort; if one fails the
+// email still goes out with the raw id.
+async function usernameFor(id) {
+  if (!id) return '(unknown)';
+  try {
+    const u = await User.findById(id).select('username');
+    return u ? `${u.username} (${id})` : String(id);
+  } catch {
+    return String(id);
+  }
+}
+
+// kind: 'user' | 'post'. targetId is the reportedUser id or the post id.
+export async function notifyReport({ kind, reason, note, reporterId, targetId }) {
+  const [reporter, target] = await Promise.all([
+    usernameFor(reporterId),
+    usernameFor(targetId),
+  ]);
+
+  const targetLabel = kind === 'post' ? 'Reported post' : 'Reported user';
+  const subject = `⚠️ ${kind === 'post' ? 'Post' : 'User'} reported: ${reason}`;
+
+  await send({
+    to: config.adminEmail,
+    subject,
+    html: `
+      <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px">
+        <h1 style="font-size:18px;margin:0 0 16px">New ${escapeHtml(kind)} report</h1>
+        <table style="width:100%;border-collapse:collapse;font-size:14px;color:#222">
+          <tr><td style="padding:6px 0;color:#888;width:120px">Reason</td><td style="padding:6px 0;font-weight:600">${escapeHtml(reason)}</td></tr>
+          <tr><td style="padding:6px 0;color:#888">${targetLabel}</td><td style="padding:6px 0">${escapeHtml(target)}</td></tr>
+          <tr><td style="padding:6px 0;color:#888">Reporter</td><td style="padding:6px 0">${escapeHtml(reporter)}</td></tr>
+          ${note ? `<tr><td style="padding:6px 0;color:#888;vertical-align:top">Note</td><td style="padding:6px 0">${escapeHtml(note)}</td></tr>` : ''}
+          <tr><td style="padding:6px 0;color:#888">Time</td><td style="padding:6px 0">${new Date().toISOString()}</td></tr>
+        </table>
+        <p style="color:#888;font-size:13px;line-height:1.5;margin:24px 0 0">
+          This report is stored with status <strong>open</strong>. Review it in the
+          admin reports list and mark it reviewed or dismissed.
         </p>
       </div>
     `,

@@ -1,6 +1,7 @@
 // localpulse/server/src/models/Report.js
 import mongoose from 'mongoose';
 
+
 export const REPORT_REASONS = ['spam', 'harassment', 'inappropriate', 'misinformation', 'other'];
 export const REPORT_STATUS = ['open', 'reviewed', 'dismissed'];
 

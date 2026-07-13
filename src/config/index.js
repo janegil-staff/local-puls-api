@@ -45,4 +45,9 @@ export const config = {
   resendApiKey: process.env.RESEND_API_KEY || '',
   mailFrom: process.env.MAIL_FROM || 'LocalPulse <onboarding@resend.dev>',
   clientUrl: process.env.CLIENT_URL,
+
+  // Where user/post reports are emailed for review. Falls back to the company
+  // contact address so reports are never silently dropped if the env var is
+  // unset. Set ADMIN_EMAIL in the server env to route them elsewhere.
+  adminEmail: process.env.ADMIN_EMAIL || 'jan.egil@qupda.com',
 };

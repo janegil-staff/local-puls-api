@@ -5,6 +5,7 @@ import User from '../models/User.js';
 import Post from '../models/Post.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
 import { ApiError } from '../utils/ApiError.js';
+import { notifyReport } from '../lib/mail.js';
 
 export const reportPost = asyncHandler(async (req, res) => {
   const { reason, note } = req.body;
@@ -13,6 +14,16 @@ export const reportPost = asyncHandler(async (req, res) => {
   if (!post) throw ApiError.notFound('Post not found');
 
   await Report.create({ reporter: req.userId, post: post._id, reason, note: note || '' });
+
+  // Best-effort admin alert — a mail failure must never fail the report.
+  notifyReport({
+    kind: 'post',
+    reason,
+    note,
+    reporterId: req.userId,
+    targetId: post._id,
+  }).catch(() => {});
+
   res.status(201).json({ ok: true });
 });
 
@@ -23,6 +34,16 @@ export const reportUser = asyncHandler(async (req, res) => {
   if (!user) throw ApiError.notFound('User not found');
 
   await Report.create({ reporter: req.userId, reportedUser: user._id, reason, note: note || '' });
+
+  // Best-effort admin alert — a mail failure must never fail the report.
+  notifyReport({
+    kind: 'user',
+    reason,
+    note,
+    reporterId: req.userId,
+    targetId: user._id,
+  }).catch(() => {});
+
   res.status(201).json({ ok: true });
 });
 
