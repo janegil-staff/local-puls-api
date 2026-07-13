@@ -20,8 +20,15 @@ const app = express();
 
 app.set('trust proxy', 1); // correct client IPs behind DO's proxy
 app.use(helmet({ crossOriginResourcePolicy: false })); // allow images to load cross-origin
-app.use(cors({ origin: config.clientOrigins.includes('*') ? true : config.clientOrigins }));
-app.use(express.json({ limit: '2mb' }));
+// server.js — replace the cors() line
+const corsOrigins = config.clientOrigins.includes('*') ? true : config.clientOrigins;
+app.use(cors({
+  origin: corsOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  
+})); app.use(express.json({ limit: '2mb' }));
 app.use(morgan(config.isProd ? 'combined' : 'dev'));
 
 // Serve locally-stored uploads (dev fallback when Spaces isn't configured).
