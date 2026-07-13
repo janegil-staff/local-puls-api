@@ -31,14 +31,20 @@ async function loadVisibleConversation(convoId, viewerId) {
 }
 
 // Shape a conversation for the client (other participant + meta).
+//
+// The client reads a single `otherUser` (name, avatar, chat title), so we
+// resolve the non-viewer participant and send it under that key. `participants`
+// is kept for any caller that still expects the filtered array.
 function shapeConvo(c, viewerId) {
+  const others = c.participants
+    .filter((p) => String(p._id) !== String(viewerId))
+    .map((p) => (p.toPublic ? p.toPublic() : p));
   return {
     id: c._id,
     status: c.status,
     isInitiator: String(c.initiator) === String(viewerId),
-    participants: c.participants
-      .filter((p) => String(p._id) !== String(viewerId))
-      .map((p) => (p.toPublic ? p.toPublic() : p)),
+    otherUser: others[0] || null,
+    participants: others,
     lastMessage: c.lastMessage,
     lastMessageAt: c.lastMessageAt,
   };
