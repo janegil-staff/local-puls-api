@@ -4,6 +4,13 @@
 // BROWSE location (falls back to their own location), excluding themselves and
 // anyone blocked in either direction. No swipe-exclusion — matching is gone.
 //
+// Discover is open to EVERYONE: there is no profileComplete gate on the viewer,
+// and no profileComplete filter on the deck. Note that incomplete accounts still
+// won't SURFACE in anyone's deck, because the gender/dob filters below don't
+// match documents where those fields are absent. Letting them appear as well
+// would mean allowing missing gender/dob past the viewer's own show/age
+// preferences — a deliberate product decision, not an oversight.
+//
 // Distances come from $geoNear and are rounded before they leave the server.
 // Stored coordinates are already snapped to a ~100m grid (see
 // locationController.snapCoords), which is what actually defeats
@@ -50,7 +57,6 @@ function displayKm(meters) {
 export const getDeck = asyncHandler(async (req, res) => {
   const me = await User.findById(req.userId);
   if (!me) throw ApiError.unauthorized();
-  if (!me.profileComplete) throw ApiError.badRequest('Complete your profile first');
 
   // Browse from the chosen browse location if set, else my own location.
   const hasBrowseOverride = me.browseLocation?.coordinates?.length === 2;
@@ -58,6 +64,8 @@ export const getDeck = asyncHandler(async (req, res) => {
     ? me.browseLocation.coordinates
     : me.location?.coordinates;
 
+  // A location is still required — $geoNear needs an origin to measure from.
+  // This is the one remaining gate, and it applies regardless of profile state.
   if (!browseCoords?.length) {
     throw ApiError.badRequest(
       'Set your location to see people nearby. Enable location access or pick an area in Settings.',
@@ -67,7 +75,7 @@ export const getDeck = asyncHandler(async (req, res) => {
   const prefs = me.preferences || {};
   const limit = Math.min(Number(req.query.limit) || 40, 60);
 
-// `null` means "Anywhere" — no distance cut-off, and the default for new
+  // `null` means "Anywhere" — no distance cut-off, and the default for new
   // accounts. Only `undefined` (field never written, i.e. a document created
   // before this path existed) falls back to 50. `??` would collapse null into
   // the default and make the omission below unreachable.
@@ -90,7 +98,6 @@ export const getDeck = asyncHandler(async (req, res) => {
     key: 'location',
     query: {
       _id: { $nin: excludeIds.map((id) => new mongoose.Types.ObjectId(String(id))) },
-      profileComplete: true,
       banned: false,
       // Users who have never reported a position have no `location` at all.
       // Without this they'd be excluded by $geoNear anyway, but being
@@ -119,7 +126,7 @@ export const getDeck = asyncHandler(async (req, res) => {
     const showsOnline = u.showOnlineStatus ?? true;
     const showsDistance = u.showDistance ?? true;
 
-const card = {
+    const card = {
       id: u._id,
       username: u.username,
       displayName: u.displayName || u.username,
