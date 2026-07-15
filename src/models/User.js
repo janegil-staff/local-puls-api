@@ -228,7 +228,10 @@ userSchema.methods.toPublic = function toPublic() {
     online: this.visibleOnline(),
     role: this.role,
     browseLocationName: this.browseLocationName,
-    language: this.language
+    language: this.language,
+    location: this.location,
+    locationName: this.locationName,
+    neighborhood: this.neighborhood
   };
 };
 
