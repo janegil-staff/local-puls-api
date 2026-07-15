@@ -17,12 +17,17 @@ export const toggleSave = asyncHandler(async (req, res) => {
   res.json({ saved: true });
 });
 
+// localpulse/server/src/controllers/savedController.js
 export const listSaved = asyncHandler(async (req, res) => {
   const saved = await SavedPost.find({ user: req.userId })
     .sort({ createdAt: -1 })
     .populate({ path: 'post', populate: { path: 'author' } });
+  // savedByMe is always true here — this route IS the save list. toClient()
+  // can't know that: saves live in the SavedPost collection, not on the post
+  // document, so getFeed decorates the flag from a separate query (see
+  // postController.js) and this route can just hardcode it.
   const posts = saved
     .filter((s) => s.post)
-    .map((s) => s.post.toClient(req.userId));
+    .map((s) => ({ ...s.post.toClient(req.userId), savedByMe: true }));
   res.json({ posts });
 });
