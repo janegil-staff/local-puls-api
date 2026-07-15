@@ -56,9 +56,9 @@ export async function listConversations(req, res) {
     const blockedIds = await blockedIdsFor(req.userId);
     const convos = await Conversation.find({
       participants: { $all: [req.userId], $nin: blockedIds },
-      // Accepted threads, PLUS pending ones the viewer started. A previous
+      // Accepted threads, PLUS pending ones the viewer started. A bare
       // `status: { $ne: 'pending' }` hid the initiator's own outgoing request
-      // from them entirely: they could send, but the thread was invisible in
+      // from them entirely: they could send into it, but it was invisible in
       // their inbox until the recipient accepted. Incoming pending threads stay
       // out — those belong in listRequests.
       $or: [
