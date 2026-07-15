@@ -22,6 +22,9 @@ export async function getProfile(req, res) {
     return res.json({
       profile: {
         ...user.toPublic(),
+        gender: user.gender,
+        age: user.dob ? Math.floor((Date.now() - new Date(user.dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
+        language: user.language,
         followerCount: followers,
         followingCount: following,
         followedByMe: Boolean(viewerFollows),
