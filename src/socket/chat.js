@@ -158,50 +158,35 @@ export function registerChat(io) {
 
     // localpulse/server/src/socket/chat.js
 
-    socket.on('chat:send', async ({ conversationId, text }, cb) => {
+    // Send text. Unlike images, this works on a PENDING conversation — but the
+    // initiator gets exactly one message: the opener, so the recipient has
+    // something to judge the request on. Everything after that waits for
+    // accept. The recipient is unrestricted; replying to a request is implicit
+    // consent, and accepting flips the status anyway.
+    socket.on('chat:send', async ({ conversationId, text }, ack) => {
       try {
-        const userId = socket.userId;   // ← match whatever authSocket sets
         const body = String(text || '').trim();
+        if (!body) return ack?.({ error: 'Empty message' });
+        if (body.length > 2000) return ack?.({ error: 'Message too long' });
 
-        if (!body) return cb?.({ error: 'EMPTY' });
-        if (body.length > 2000) return cb?.({ error: 'TOO_LONG' });
+        const { convo } = await loadSendable(socket.userId, conversationId);
+        const { error } = await loadSendable(socket.userId, conversationId);
+        if (error) return ack?.({ error });
 
-        const convo = await Conversation.findById(conversationId);
-        if (!convo) return cb?.({ error: 'NOT_FOUND' });
-        if (!convo.participants.some((p) => String(p) === String(userId))) {
-          return cb?.({ error: 'FORBIDDEN' });
-        }
-
-        const otherId = convo.participants.find((p) => String(p) !== String(userId));
-        if (await isBlockedBetween(userId, otherId)) {
-          return cb?.({ error: 'BLOCKED' });
-        }
-
-        // A pending thread the viewer started allows exactly one message — the
-        // opener, so the recipient has something to judge the request on. Every
-        // message after that waits for accept. The recipient is unrestricted:
-        // replying to a request is implicit consent, and accept() flips status
-        // anyway. Images stay accepted-only regardless (see chat:sendImage).
-        if (convo.status === 'pending' && String(convo.initiator) === String(userId)) {
+        // The one-message allowance. Only the initiator is capped: on a pending
+        // thread nobody else has written, so a bare count is the same as
+        // counting theirs. PENDING_LIMIT is a code, not a sentence — the client
+        // localizes it (m.textPending).
+        if (convo.status === 'pending' && String(convo.initiator) === String(socket.userId)) {
           const sent = await Message.countDocuments({ conversation: convo._id });
-          if (sent >= 1) return cb?.({ error: 'PENDING_LIMIT' });
+          if (sent >= 1) return ack?.({ error: 'PENDING_LIMIT' });
         }
 
-        const msg = await Message.create({
-          conversation: convo._id,
-          sender: userId,
-          text: body,
-        });
-
-        convo.lastMessage = body;
-        convo.lastMessageAt = msg.createdAt;
-        await convo.save();
-
-        await deliver(io, convo, msg, userId, otherId);
-        return cb?.({ ok: true, message: serializeMessage(msg) });
-      } catch (e) {
-        console.error('chat:send', e);
-        return cb?.({ error: 'SERVER' });
+        const payload = await deliver(io, socket.userId, convo, { text: body }, body);
+        ack?.({ ok: true, message: payload });
+      } catch (err) {
+        console.error('chat:send error', err);
+        ack?.({ error: 'Send failed' });
       }
     });
 
