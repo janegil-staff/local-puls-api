@@ -156,20 +156,50 @@ export function registerChat(io) {
       if (conversationId) socket.leave(`convo:${conversationId}`);
     });
 
-    // Send a text message.
-    socket.on('chat:send', async ({ conversationId, text }, ack) => {
+    // localpulse/server/src/socket/chat.js
+
+    socket.on('chat:send', async ({ conversationId, text }, cb) => {
       try {
-        const t = String(text || '').trim();
-        if (!t) return ack?.({ error: 'Empty message' });
+        const body = String(text || '').trim();
+        if (!body) return cb?.({ error: 'EMPTY' });
+        if (body.length > 2000) return cb?.({ error: 'TOO_LONG' });
 
-        const { convo, error } = await loadSendable(socket.userId, conversationId);
-        if (error) return ack?.({ error });
+        const convo = await Conversation.findById(conversationId);
+        if (!convo) return cb?.({ error: 'NOT_FOUND' });
+        if (!convo.participants.some((p) => String(p) === String(userId))) {
+          return cb?.({ error: 'FORBIDDEN' });
+        }
 
-        const payload = await deliver(io, socket.userId, convo, { text: t }, t);
-        ack?.({ ok: true, message: payload });
-      } catch (err) {
-        console.error('chat:send error', err);
-        ack?.({ error: 'Send failed' });
+        const otherId = convo.participants.find((p) => String(p) !== String(userId));
+        if (await isBlockedBetween(userId, otherId)) {
+          return cb?.({ error: 'BLOCKED' });
+        }
+
+        // A pending thread the viewer started allows exactly one message — the
+        // opener, so the recipient has something to judge the request on. Every
+        // message after that waits for accept. The recipient is unrestricted:
+        // replying to a request is implicit consent, and accept() flips status
+        // anyway. Images stay accepted-only regardless (see chat:sendImage).
+        if (convo.status === 'pending' && String(convo.initiator) === String(userId)) {
+          const sent = await Message.countDocuments({ conversation: convo._id });
+          if (sent >= 1) return cb?.({ error: 'PENDING_LIMIT' });
+        }
+
+        const msg = await Message.create({
+          conversation: convo._id,
+          sender: userId,
+          text: body,
+        });
+
+        convo.lastMessage = body;
+        convo.lastMessageAt = msg.createdAt;
+        await convo.save();
+
+        await deliver(io, convo, msg, userId, otherId);
+        return cb?.({ ok: true, message: serializeMessage(msg) });
+      } catch (e) {
+        console.error('chat:send', e);
+        return cb?.({ error: 'SERVER' });
       }
     });
 
@@ -213,3 +243,4 @@ export function registerChat(io) {
     });
   });
 }
+
