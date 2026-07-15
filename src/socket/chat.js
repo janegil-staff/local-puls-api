@@ -160,7 +160,9 @@ export function registerChat(io) {
 
     socket.on('chat:send', async ({ conversationId, text }, cb) => {
       try {
+        const userId = socket.userId;   // ← match whatever authSocket sets
         const body = String(text || '').trim();
+
         if (!body) return cb?.({ error: 'EMPTY' });
         if (body.length > 2000) return cb?.({ error: 'TOO_LONG' });
 
