@@ -227,11 +227,8 @@ userSchema.methods.toPublic = function toPublic() {
     avatarUrl: primaryUrl(this.photos),
     online: this.visibleOnline(),
     role: this.role,
-    browseLocationName: this.browseLocationName,
     language: this.language,
-    location: this.location,
     locationName: this.locationName,
-    neighborhood: this.neighborhood
   };
 };
 
