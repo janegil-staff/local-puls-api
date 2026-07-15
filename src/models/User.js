@@ -226,6 +226,7 @@ userSchema.methods.toPublic = function toPublic() {
     photos: normalizePhotos(this.photos),
     avatarUrl: primaryUrl(this.photos),
     online: this.visibleOnline(),
+    role: this.role
   };
 };
 
