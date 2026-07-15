@@ -47,7 +47,7 @@ const io = new Server(httpServer, {
   cors: { origin: config.clientOrigins.includes('*') ? '*' : config.clientOrigins, methods: ['GET', 'POST'] },
 });
 registerChat(io);
-
+app.set('io', io);
 async function start() {
   try {
     await mongoose.connect(config.mongoUri);

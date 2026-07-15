@@ -106,6 +106,8 @@ router.post('/chat/conversations/:id/accept', requireAuth, acceptConversation);
 router.get('/chat/conversations/:id/messages', requireAuth, getMessages);
 router.get('/chat/unread-count', requireAuth, chatUnreadCount);
 router.post('/chat/conversations/:id/read', requireAuth, markRead);
+router.get('/chat/unread-count', requireAuth, chatUnreadCount);
+router.post('/chat/conversations/:id/read', requireAuth, markRead);
 
 // ── Notifications + push ──────────────────────────────
 router.get('/notifications', requireAuth, listNotifications);
@@ -148,5 +150,7 @@ router.post('/auth/forgot-pin', authLimiter, requestPinReset);
 router.post('/auth/reset-pin', authLimiter, resetPin);
 
 router.post('/auth/change-pin', requireAuth, authLimiter, changePin);
+
+
 
 export default router;

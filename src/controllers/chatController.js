@@ -180,6 +180,8 @@ export async function openConversation(req, res) {
   }
 }
 
+// localpulse/server/src/controllers/chatController.js
+
 // Recipient accepts a pending conversation → moves it to the main inbox.
 export async function acceptConversation(req, res) {
   try {
@@ -192,6 +194,21 @@ export async function acceptConversation(req, res) {
     }
     convo.status = 'accepted';
     await convo.save();
+
+    // Tell the INITIATOR their request went through. Without this their open
+    // thread page sits on a stale 'pending': the composer stays locked and the
+    // image button stays disabled until they happen to reload. Goes to the
+    // personal room (joined on connect in socket/chat.js), so it reaches them
+    // wherever they are in the app, not only on the thread page.
+    //
+    // Optional-chained: if app.set('io') is ever dropped from server.js this
+    // degrades to the old reload-to-unlock behaviour rather than 500ing an
+    // accept that already succeeded.
+    req.app.get('io')?.to(`user:${convo.initiator}`).emit('chat:accepted', {
+      conversationId: String(convo._id),
+      status: convo.status,
+    });
+
     return res.json({ ok: true, conversationId: convo._id, status: convo.status });
   } catch (err) {
     console.error('acceptConversation error', err);
