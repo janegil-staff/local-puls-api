@@ -72,7 +72,7 @@ const userSchema = new mongoose.Schema(
     pinHash: { type: String }, // optional 4-6 digit PIN, hashed
     displayName: { type: String, trim: true, maxlength: 40 },
     bio: { type: String, maxlength: 300, default: '' },
-    language: { type: String, default: 'no' }, // UI language: no/en/nl/fr/de/it/sv/da/fi/es/pl/pt
+    language: { type: String, default: 'en' }, // UI language: no/en/nl/fr/de/it/sv/da/fi/es/pl/pt
 
     role: { type: String, enum: ['user', 'admin'], default: 'user' },
     banned: { type: Boolean, default: false },
@@ -226,7 +226,9 @@ userSchema.methods.toPublic = function toPublic() {
     photos: normalizePhotos(this.photos),
     avatarUrl: primaryUrl(this.photos),
     online: this.visibleOnline(),
-    role: this.role
+    role: this.role,
+    neighborhood: this.neighborhood,
+    language: this.language
   };
 };
 
