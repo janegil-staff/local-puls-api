@@ -4,7 +4,25 @@ import Follow from '../models/Follow.js';
 import Post from '../models/Post.js';
 import { notify } from '../lib/notify.js';
 
-// Public profile + follower/following counts + whether the viewer follows them.
+// Great-circle distance in km between two GeoJSON [lng, lat] pairs.
+// Rounded to one decimal with a 0.1 floor, matching discoveryController's
+// displayKm() so the same pair of users never disagrees between screens.
+// Coordinates are already snapped to a ~100m grid on write (see
+// locationController.snapCoords), which is what actually protects against
+// trilateration; this rounding is cosmetic.
+function haversineKm([lng1, lat1], [lng2, lat2]) {
+  const R = 6371;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const km = 2 * R * Math.asin(Math.sqrt(h));
+  return km < 1 ? Math.max(0.1, Math.round(km * 10) / 10) : Math.round(km * 10) / 10;
+}
+
+// local-pulse-api/src/controllers/userController.js
 export async function getProfile(req, res) {
   try {
     const user = await User.findOne({ username: req.params.username });
@@ -19,12 +37,37 @@ export async function getProfile(req, res) {
       Post.find({ author: user._id }).sort({ createdAt: -1 }).limit(20).populate('author'),
     ]);
 
+    // Distance from the viewer, measured the same way Discover measures it:
+    // from the viewer's BROWSE location if they've set one, else their real
+    // location. Tapping a card that says "~2 km" must not open a profile that
+    // says "460 km" because the viewer is browsing another city.
+    //
+    // Gated on the target's showDistance flag — the same privacy rule
+    // discoveryController honours. Without this check the profile page is a
+    // way around a setting the user deliberately turned off.
+    //
+    // Null (not 0) when unavailable: either party lacking coordinates, the
+    // viewer being logged out, or the target hiding distance. The client omits
+    // the row rather than printing "0 km".
+    let distanceKm = null;
+    if (req.userId && (user.showDistance ?? true)) {
+      const me = await User.findById(req.userId).select('location browseLocation');
+      const from = me?.browseLocation?.coordinates?.length === 2
+        ? me.browseLocation.coordinates
+        : me?.location?.coordinates;
+      const to = user.location?.coordinates;
+      if (from?.length === 2 && to?.length === 2) {
+        distanceKm = haversineKm(from, to);
+      }
+    }
+
     return res.json({
       profile: {
         ...user.toPublic(),
         gender: user.gender,
         age: user.dob ? Math.floor((Date.now() - new Date(user.dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
         language: user.language,
+        distanceKm,
         followerCount: followers,
         followingCount: following,
         followedByMe: Boolean(viewerFollows),
