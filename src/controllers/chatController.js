@@ -50,19 +50,25 @@ function shapeConvo(c, viewerId) {
   };
 }
 
-// Main inbox: ACCEPTED conversations the viewer is part of, each with an
-// unread count (messages the viewer hasn't read, not sent by them).
+// localpulse/server/src/controllers/chatController.js
 export async function listConversations(req, res) {
   try {
-    // $all pins the viewer as a participant; $nin drops any conversation whose
-    // other participant is blocked. Correct for 2-party threads.
     const blockedIds = await blockedIdsFor(req.userId);
     const convos = await Conversation.find({
       participants: { $all: [req.userId], $nin: blockedIds },
-      status: { $ne: 'pending' },
+      // Accepted threads, PLUS pending ones the viewer started. A previous
+      // `status: { $ne: 'pending' }` hid the initiator's own outgoing request
+      // from them entirely: they could send, but the thread was invisible in
+      // their inbox until the recipient accepted. Incoming pending threads stay
+      // out — those belong in listRequests.
+      $or: [
+        { status: { $ne: 'pending' } },
+        { status: 'pending', initiator: req.userId },
+      ],
     })
       .sort({ lastMessageAt: -1 })
       .populate('participants');
+    // ...rest unchanged
 
     const shaped = await Promise.all(
       convos.map(async (c) => {
