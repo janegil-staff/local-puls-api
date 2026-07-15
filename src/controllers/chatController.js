@@ -87,15 +87,21 @@ export async function listConversations(req, res) {
   }
 }
 
-// Total unread across all accepted conversations — for the tab badge.
-// Must exclude blocked threads, or the badge counts messages the user cannot
-// open: a permanent unread count with nowhere to go.
+// localpulse/server/src/controllers/chatController.js
+
+// Total unread across the threads the viewer can actually open — for the tab
+// badge. Mirrors listConversations' filter exactly: a badge counting threads
+// the list doesn't show is a permanent unread with nowhere to go. Blocked
+// threads are excluded for the same reason.
 export async function chatUnreadCount(req, res) {
   try {
     const blockedIds = await blockedIdsFor(req.userId);
     const convos = await Conversation.find({
       participants: { $all: [req.userId], $nin: blockedIds },
-      status: { $ne: 'pending' },
+      $or: [
+        { status: { $ne: 'pending' } },
+        { status: 'pending', initiator: req.userId },
+      ],
     }).select('_id');
     const ids = convos.map((c) => c._id);
     const count = await Message.countDocuments({
@@ -109,7 +115,6 @@ export async function chatUnreadCount(req, res) {
     return res.status(500).json({ error: 'Could not load unread count' });
   }
 }
-
 // Mark all messages in a conversation as read by the viewer.
 export async function markRead(req, res) {
   try {
