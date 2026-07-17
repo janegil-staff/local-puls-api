@@ -125,6 +125,20 @@ export async function listConversations(req, res) {
 // the pending-request share, so the client can split the badge into two
 // indicators later without a server change. The client tolerates its absence
 // (`data.requestCount || 0`), so it is additive.
+//
+// ─── TEMPORARY DIAGNOSTIC — UNREAD_DEBUG_V1 ─────────────────────────────────
+// Live symptom: this endpoint returns count=1 for a user whose Inbox shows one
+// unread (Lisa) AND whose Requests tab shows one unread request (Malinda). The
+// expected total is 2. listConversations reports unread:1 for Lisa using the
+// SAME countDocuments predicate this function uses, so the two disagree about
+// the same thread.
+//
+// The console.log below prints the id partition and both sub-counts so the
+// DigitalOcean runtime log shows exactly which thread landed where and what
+// each count returned — instead of inferring it from the response.
+//
+// REMOVE THIS LOG once the cause is identified. It prints on every badge
+// refresh, which is frequent (socket notify + every route change).
 export async function chatUnreadCount(req, res) {
   try {
     const blockedIds = await blockedIdsFor(req.userId);
@@ -162,6 +176,45 @@ export async function chatUnreadCount(req, res) {
       unreadIn(inboxIds),
       unreadIn(requestIds),
     ]);
+
+    // UNREAD_DEBUG_V1 — remove once diagnosed. See the note above.
+    //
+    // Per-thread breakdown alongside the aggregate: if the aggregate disagrees
+    // with the sum of the parts, the $in match is the problem; if they agree
+    // but both differ from listConversations, the predicate is reading
+    // different data than we think.
+    const perThread = await Promise.all(
+      convos.map(async (c) => ({
+        id: String(c._id),
+        status: c.status,
+        isRequest: isRequest(c),
+        unread: await Message.countDocuments({
+          conversation: c._id,
+          sender: { $ne: req.userId },
+          readBy: { $ne: req.userId },
+        }),
+      }))
+    );
+    console.log(
+      '[UNREAD_DEBUG_V1]',
+      JSON.stringify(
+        {
+          userId: String(req.userId),
+          userIdType: typeof req.userId,
+          blockedIds: blockedIds.map(String),
+          matched: convos.length,
+          inboxIds: inboxIds.map(String),
+          requestIds: requestIds.map(String),
+          inboxCount,
+          requestCount,
+          total: inboxCount + requestCount,
+          perThread,
+          perThreadSum: perThread.reduce((s, t) => s + t.unread, 0),
+        },
+        null,
+        2
+      )
+    );
 
     return res.json({ count: inboxCount + requestCount, requestCount });
   } catch (err) {
