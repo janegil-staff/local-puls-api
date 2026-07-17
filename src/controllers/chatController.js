@@ -64,6 +64,7 @@ export async function listConversations(req, res) {
       $or: [
         { status: { $ne: 'pending' } },
         { status: 'pending', initiator: req.userId },
+        { status: 'pending', initiator: { $ne: req.userId } },   // ← count requests too
       ],
     })
       .sort({ lastMessageAt: -1 })
