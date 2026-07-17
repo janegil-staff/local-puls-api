@@ -126,22 +126,53 @@ export async function listConversations(req, res) {
 // indicators later without a server change. The client tolerates its absence
 // (`data.requestCount || 0`), so it is additive.
 //
-// ─── TEMPORARY DIAGNOSTIC — UNREAD_DEBUG_V1 ─────────────────────────────────
-// Live symptom: this endpoint returns count=1 for a user whose Inbox shows one
-// unread (Lisa) AND whose Requests tab shows one unread request (Malinda). The
-// expected total is 2. listConversations reports unread:1 for Lisa using the
-// SAME countDocuments predicate this function uses, so the two disagree about
-// the same thread.
+// ─── TEMPORARY DIAGNOSTIC — UNREAD_DEBUG_V2 ─────────────────────────────────
+// Symptom: this endpoint returns count=1 where the UI shows 2 unread (Lisa in
+// Inbox, Malinda in Requests).
 //
-// The console.log below prints the id partition and both sub-counts so the
-// DigitalOcean runtime log shows exactly which thread landed where and what
-// each count returned — instead of inferring it from the response.
+// V1 logging narrowed it sharply: the main query reported `matched: 2` — only
+// the two PENDING threads (Hanne, Malinda). Both ACCEPTED threads (Lisa, Heidi)
+// were absent from the result set entirely. So this is not a counting bug; the
+// $or clause `{ status: { $ne: 'pending' } }` is matching nothing, even though
+// listConversations uses the identical clause and DOES return them.
 //
-// REMOVE THIS LOG once the cause is identified. It prints on every badge
-// refresh, which is frequent (socket notify + every route change).
+// V2 isolates which half of the filter drops them, by running the same query
+// three ways and logging each match count:
+//   probeBase  — participants clause only, no $or at all.
+//   probeNotP  — participants + ONLY `{ status: { $ne: 'pending' } }`.
+//   probeMain  — the real query (what this function actually uses).
+//
+// Reading the result:
+//   probeBase=4, probeNotP=0  → the $ne:'pending' clause is the culprit; look
+//                               at the stored `status` values (type? case?).
+//   probeBase=2               → the participants clause drops them, and
+//                               listConversations is somehow seeing different
+//                               data — check $all/$nin interaction.
+//   probeMain < probeNotP + 2 → the $or composition itself is at fault.
+//
+// REMOVE ALL OF THIS once diagnosed. It runs several extra queries on every
+// badge refresh, which is frequent (socket notify + every route change).
 export async function chatUnreadCount(req, res) {
   try {
     const blockedIds = await blockedIdsFor(req.userId);
+
+    // ─── UNREAD_DEBUG_V2 probes — remove once diagnosed ──────────────────────
+    const probeBase = await Conversation.find({
+      participants: { $all: [req.userId], $nin: blockedIds },
+    }).select('_id status initiator');
+
+    const probeNotP = await Conversation.find({
+      participants: { $all: [req.userId], $nin: blockedIds },
+      status: { $ne: 'pending' },
+    }).select('_id status');
+
+    // Every thread the viewer participates in, with NO block filter at all.
+    // If this returns more than probeBase, the $nin is dropping threads whose
+    // other participant is not actually blocked.
+    const probeNoBlock = await Conversation.find({
+      participants: req.userId,
+    }).select('_id status initiator');
+    // ─────────────────────────────────────────────────────────────────────────
 
     const convos = await Conversation.find({
       participants: { $all: [req.userId], $nin: blockedIds },
@@ -177,39 +208,44 @@ export async function chatUnreadCount(req, res) {
       unreadIn(requestIds),
     ]);
 
-    // UNREAD_DEBUG_V1 — remove once diagnosed. See the note above.
-    //
-    // Per-thread breakdown alongside the aggregate: if the aggregate disagrees
-    // with the sum of the parts, the $in match is the problem; if they agree
-    // but both differ from listConversations, the predicate is reading
-    // different data than we think.
-    const perThread = await Promise.all(
-      convos.map(async (c) => ({
-        id: String(c._id),
-        status: c.status,
-        isRequest: isRequest(c),
-        unread: await Message.countDocuments({
-          conversation: c._id,
-          sender: { $ne: req.userId },
-          readBy: { $ne: req.userId },
-        }),
-      }))
-    );
+    // UNREAD_DEBUG_V2 — remove once diagnosed. See the note above.
     console.log(
-      '[UNREAD_DEBUG_V1]',
+      '[UNREAD_DEBUG_V2]',
       JSON.stringify(
         {
           userId: String(req.userId),
-          userIdType: typeof req.userId,
           blockedIds: blockedIds.map(String),
+
+          // The three probes. Compare their lengths to localise the drop.
+          probeBase: {
+            n: probeBase.length,
+            rows: probeBase.map((c) => ({
+              id: String(c._id),
+              status: c.status,
+              statusType: typeof c.status,
+              initiator: String(c.initiator),
+            })),
+          },
+          probeNotP: {
+            n: probeNotP.length,
+            rows: probeNotP.map((c) => ({ id: String(c._id), status: c.status })),
+          },
+          probeNoBlock: {
+            n: probeNoBlock.length,
+            rows: probeNoBlock.map((c) => ({
+              id: String(c._id),
+              status: c.status,
+              initiator: String(c.initiator),
+            })),
+          },
+
+          // The real query's outcome.
           matched: convos.length,
           inboxIds: inboxIds.map(String),
           requestIds: requestIds.map(String),
           inboxCount,
           requestCount,
           total: inboxCount + requestCount,
-          perThread,
-          perThreadSum: perThread.reduce((s, t) => s + t.unread, 0),
         },
         null,
         2
