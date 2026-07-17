@@ -1,4 +1,4 @@
-// localpulse/server/src/socket/chat.js
+// local-pulse-api/src/socket/chat.js
 import jwt from 'jsonwebtoken';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
@@ -54,8 +54,13 @@ function authSocket(socket, next) {
 }
 
 // Shared by chat:send and chat:sendImage. Loads the conversation, runs the
-// participant and block checks, and returns { convo, other } or an error
-// string — never both.
+// participant and block checks, and returns { convo, other } or { error } —
+// never both.
+//
+// CALL IT ONCE, and destructure { convo, other, error } from that single call.
+// chat:send previously called it twice in a row — once for `convo`, once for
+// `error` — which doubled the DB round-trips on every keystroke-to-send and
+// only happened to work because a success result leaves `error` undefined.
 async function loadSendable(userId, conversationId) {
   if (!conversationId) return { error: 'Empty message' };
 
@@ -156,21 +161,27 @@ export function registerChat(io) {
       if (conversationId) socket.leave(`convo:${conversationId}`);
     });
 
-    // localpulse/server/src/socket/chat.js
-
     // Send text. Unlike images, this works on a PENDING conversation — but the
     // initiator gets exactly one message: the opener, so the recipient has
     // something to judge the request on. Everything after that waits for
     // accept. The recipient is unrestricted; replying to a request is implicit
     // consent, and accepting flips the status anyway.
+    //
+    // EVERY failure path acks with { error }. A client that clears its input
+    // before reading the ack will look like it sent when it didn't — that is a
+    // client bug, but it is worth knowing this handler is the one telling it
+    // "no". PENDING_LIMIT in particular is a normal, expected outcome, not a
+    // fault: it fires on every send after the opener until the recipient
+    // accepts.
     socket.on('chat:send', async ({ conversationId, text }, ack) => {
       try {
         const body = String(text || '').trim();
         if (!body) return ack?.({ error: 'Empty message' });
         if (body.length > 2000) return ack?.({ error: 'Message too long' });
 
-        const { convo } = await loadSendable(socket.userId, conversationId);
-        const { error } = await loadSendable(socket.userId, conversationId);
+        // ONE call — see the note on loadSendable. This was two calls, which
+        // ran the findById + block check twice per message.
+        const { convo, error } = await loadSendable(socket.userId, conversationId);
         if (error) return ack?.({ error });
 
         // The one-message allowance. Only the initiator is capped: on a pending
@@ -230,4 +241,3 @@ export function registerChat(io) {
     });
   });
 }
-
