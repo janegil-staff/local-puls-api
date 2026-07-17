@@ -1,4 +1,4 @@
-// localpulse/server/src/controllers/chatController.js
+// local-pulse-api/src/controllers/chatController.js
 //
 // Block checks come from lib/blocks.js — do NOT redeclare them here. This file
 // previously carried its own copies, which is how getMessages ended up with no
@@ -6,6 +6,24 @@
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import { blockedBetween, blockedIdsFor } from '../lib/blocks.js';
+
+// ─── The three chat queries are deliberately NOT identical ───────────────────
+//
+// They look similar enough to invite "syncing" them. Don't. Each one backs a
+// different surface, and a pending conversation the viewer did NOT start
+// belongs to exactly one of them:
+//
+//   listConversations  → Inbox tab.     Accepted + the viewer's OWN outgoing
+//                                       pending. Incoming requests stay OUT.
+//   listRequests       → Requests tab.  ONLY incoming pending.
+//   chatUnreadCount    → the nav badge. BOTH tabs, because the badge sits
+//                                       above both.
+//
+// So `{ status: 'pending', initiator: { $ne: req.userId } }` is correct in
+// listRequests and chatUnreadCount, and WRONG in listConversations — putting it
+// there renders every message request twice: once in Inbox, once in Requests.
+// That exact bug shipped once already. The comments below repeat this at each
+// site on purpose.
 
 // Load a conversation and assert the viewer may see it: they must be a
 // participant, and there must be no block in either direction.
@@ -50,7 +68,7 @@ function shapeConvo(c, viewerId) {
   };
 }
 
-// localpulse/server/src/controllers/chatController.js
+// INBOX tab. See the header note: this query must NOT match incoming requests.
 export async function listConversations(req, res) {
   try {
     const blockedIds = await blockedIdsFor(req.userId);
@@ -59,17 +77,19 @@ export async function listConversations(req, res) {
       // Accepted threads, PLUS pending ones the viewer started. A bare
       // `status: { $ne: 'pending' }` hid the initiator's own outgoing request
       // from them entirely: they could send into it, but it was invisible in
-      // their inbox until the recipient accepted. Incoming pending threads stay
-      // out — those belong in listRequests.
+      // their inbox until the recipient accepted.
+      //
+      // Incoming pending threads stay OUT — they belong to listRequests. A
+      // third clause matching `initiator: { $ne: req.userId }` was added here
+      // by mistake and showed every request in BOTH tabs. It belongs in
+      // chatUnreadCount (badge spans both tabs), never here.
       $or: [
         { status: { $ne: 'pending' } },
         { status: 'pending', initiator: req.userId },
-        { status: 'pending', initiator: { $ne: req.userId } },   // ← count requests too
       ],
     })
       .sort({ lastMessageAt: -1 })
       .populate('participants');
-    // ...rest unchanged
 
     const shaped = await Promise.all(
       convos.map(async (c) => {
@@ -88,35 +108,68 @@ export async function listConversations(req, res) {
   }
 }
 
-// localpulse/server/src/controllers/chatController.js
-
-// Total unread across the threads the viewer can actually open — for the tab
-// badge. Mirrors listConversations' filter exactly: a badge counting threads
-// the list doesn't show is a permanent unread with nowhere to go. Blocked
-// threads are excluded for the same reason.
+// NAV BADGE. One number over every thread reachable from /messages — which is
+// BOTH tabs on that page (Inbox and Requests).
+//
+// This filter is intentionally WIDER than listConversations'. That query backs
+// the Inbox list alone; this one backs a badge sitting above both tabs. An
+// earlier version mirrored listConversations exactly, so an incoming request
+// produced no badge at all: the message was unread and silently uncounted.
+//
+// Widening is only safe because /messages renders both lists — the number
+// always has somewhere to land and can be cleared. Do NOT extend this to
+// threads with no UI route; that is a permanent unread with nowhere to go.
+// Blocked threads stay excluded for the same reason: no UI, no count.
+//
+// `count` is the combined total the badge renders. `requestCount` breaks out
+// the pending-request share, so the client can split the badge into two
+// indicators later without a server change. The client tolerates its absence
+// (`data.requestCount || 0`), so it is additive.
 export async function chatUnreadCount(req, res) {
   try {
     const blockedIds = await blockedIdsFor(req.userId);
+
     const convos = await Conversation.find({
       participants: { $all: [req.userId], $nin: blockedIds },
       $or: [
+        // Inbox tab.
         { status: { $ne: 'pending' } },
         { status: 'pending', initiator: req.userId },
-        { status: 'pending', initiator: { $ne: req.userId } },   // ← requests
+        // Requests tab.
+        { status: 'pending', initiator: { $ne: req.userId } },
       ],
-    }).select('_id');
-    const ids = convos.map((c) => c._id);
-    const count = await Message.countDocuments({
-      conversation: { $in: ids },
-      sender: { $ne: req.userId },
-      readBy: { $ne: req.userId },
-    });
-    return res.json({ count });
+    }).select('_id status initiator');
+
+    // Partition into the two tabs. `status` is a strict enum and `initiator` is
+    // always set by openConversation, so these are disjoint and exhaustive — no
+    // thread can be double-counted or dropped.
+    const isRequest = (c) =>
+      c.status === 'pending' && String(c.initiator) !== String(req.userId);
+
+    const requestIds = convos.filter(isRequest).map((c) => c._id);
+    const inboxIds = convos.filter((c) => !isRequest(c)).map((c) => c._id);
+
+    const unreadIn = (ids) =>
+      ids.length
+        ? Message.countDocuments({
+            conversation: { $in: ids },
+            sender: { $ne: req.userId },
+            readBy: { $ne: req.userId },
+          })
+        : Promise.resolve(0);
+
+    const [inboxCount, requestCount] = await Promise.all([
+      unreadIn(inboxIds),
+      unreadIn(requestIds),
+    ]);
+
+    return res.json({ count: inboxCount + requestCount, requestCount });
   } catch (err) {
     console.error('unreadCount error', err);
     return res.status(500).json({ error: 'Could not load unread count' });
   }
 }
+
 // Mark all messages in a conversation as read by the viewer.
 export async function markRead(req, res) {
   try {
@@ -134,9 +187,9 @@ export async function markRead(req, res) {
   }
 }
 
-// Requests inbox: PENDING conversations where the viewer is the RECIPIENT
-// (i.e. someone else started it). The initiator does not see their own
-// outgoing requests here.
+// REQUESTS tab: PENDING conversations where the viewer is the RECIPIENT (i.e.
+// someone else started it). The initiator does not see their own outgoing
+// requests here — those show in their Inbox via listConversations.
 export async function listRequests(req, res) {
   try {
     const blockedIds = await blockedIdsFor(req.userId);
@@ -181,8 +234,6 @@ export async function openConversation(req, res) {
     return res.status(500).json({ error: 'Could not open conversation' });
   }
 }
-
-// localpulse/server/src/controllers/chatController.js
 
 // Recipient accepts a pending conversation → moves it to the main inbox.
 export async function acceptConversation(req, res) {
