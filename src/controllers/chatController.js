@@ -9,7 +9,7 @@ import { blockedBetween, blockedIdsFor } from '../lib/blocks.js';
 
 // ─── The three chat queries are deliberately NOT identical ───────────────────
 //
-// They look similar enough to invite "syncing" them. Don't. Each one backs a
+// They look similar enough to invite "syncing" them. Don't. Each backs a
 // different surface, and a pending conversation the viewer did NOT start
 // belongs to exactly one of them:
 //
@@ -17,13 +17,13 @@ import { blockedBetween, blockedIdsFor } from '../lib/blocks.js';
 //                                       pending. Incoming requests stay OUT.
 //   listRequests       → Requests tab.  ONLY incoming pending.
 //   chatUnreadCount    → the nav badge. BOTH tabs, because the badge sits
-//                                       above both.
+//                                       above both — so it needs no status
+//                                       filter at all (see below).
 //
-// So `{ status: 'pending', initiator: { $ne: req.userId } }` is correct in
-// listRequests and chatUnreadCount, and WRONG in listConversations — putting it
-// there renders every message request twice: once in Inbox, once in Requests.
-// That exact bug shipped once already. The comments below repeat this at each
-// site on purpose.
+// `{ status: 'pending', initiator: { $ne: req.userId } }` is correct in
+// listRequests, and WRONG in listConversations — putting it there renders every
+// message request twice: once in Inbox, once in Requests. That bug shipped
+// once already. The comments below repeat this at each site on purpose.
 
 // Load a conversation and assert the viewer may see it: they must be a
 // participant, and there must be no block in either direction.
@@ -81,8 +81,7 @@ export async function listConversations(req, res) {
       //
       // Incoming pending threads stay OUT — they belong to listRequests. A
       // third clause matching `initiator: { $ne: req.userId }` was added here
-      // by mistake and showed every request in BOTH tabs. It belongs in
-      // chatUnreadCount (badge spans both tabs), never here.
+      // by mistake and showed every request in BOTH tabs.
       $or: [
         { status: { $ne: 'pending' } },
         { status: 'pending', initiator: req.userId },
@@ -108,81 +107,40 @@ export async function listConversations(req, res) {
   }
 }
 
-// NAV BADGE. One number over every thread reachable from /messages — which is
-// BOTH tabs on that page (Inbox and Requests).
+// NAV BADGE. One number spanning every thread reachable from /messages — which
+// is BOTH tabs on that page (Inbox and Requests).
 //
-// This filter is intentionally WIDER than listConversations'. That query backs
-// the Inbox list alone; this one backs a badge sitting above both tabs. An
-// earlier version mirrored listConversations exactly, so an incoming request
-// produced no badge at all: the message was unread and silently uncounted.
+// NO STATUS FILTER, AND NO $or. This is deliberate and hard-won:
 //
-// Widening is only safe because /messages renders both lists — the number
-// always has somewhere to land and can be cleared. Do NOT extend this to
-// threads with no UI route; that is a permanent unread with nowhere to go.
-// Blocked threads stay excluded for the same reason: no UI, no count.
+// Every conversation the viewer participates in (minus blocks) is reachable
+// from /messages — accepted and own-outgoing-pending land in the Inbox tab,
+// incoming-pending lands in the Requests tab. There is no fourth category, so
+// there is nothing for a status filter to exclude. The participants clause
+// alone is already the exact set.
+//
+// An earlier version carried a three-branch $or mirroring the two list queries.
+// It silently returned ONLY the pending threads: every accepted conversation
+// vanished from the badge, so a real unread message counted as zero. Each
+// branch matched correctly in isolation ($ne:'pending' alone found both
+// accepted threads) but combining them under $or alongside $all/$nin on the
+// same `participants` array field dropped them. listConversations gets away
+// with a similar shape because its $or has two branches, not three — which is
+// luck, not design. Do not reintroduce an $or here; it is not needed, and it
+// broke this endpoint for weeks.
+//
+// The status/initiator split happens in JS below, where it is explicit and
+// cannot be miscompiled by the query planner.
 //
 // `count` is the combined total the badge renders. `requestCount` breaks out
-// the pending-request share, so the client can split the badge into two
+// the pending-request share so the client can split the badge into two
 // indicators later without a server change. The client tolerates its absence
 // (`data.requestCount || 0`), so it is additive.
-//
-// ─── TEMPORARY DIAGNOSTIC — UNREAD_DEBUG_V2 ─────────────────────────────────
-// Symptom: this endpoint returns count=1 where the UI shows 2 unread (Lisa in
-// Inbox, Malinda in Requests).
-//
-// V1 logging narrowed it sharply: the main query reported `matched: 2` — only
-// the two PENDING threads (Hanne, Malinda). Both ACCEPTED threads (Lisa, Heidi)
-// were absent from the result set entirely. So this is not a counting bug; the
-// $or clause `{ status: { $ne: 'pending' } }` is matching nothing, even though
-// listConversations uses the identical clause and DOES return them.
-//
-// V2 isolates which half of the filter drops them, by running the same query
-// three ways and logging each match count:
-//   probeBase  — participants clause only, no $or at all.
-//   probeNotP  — participants + ONLY `{ status: { $ne: 'pending' } }`.
-//   probeMain  — the real query (what this function actually uses).
-//
-// Reading the result:
-//   probeBase=4, probeNotP=0  → the $ne:'pending' clause is the culprit; look
-//                               at the stored `status` values (type? case?).
-//   probeBase=2               → the participants clause drops them, and
-//                               listConversations is somehow seeing different
-//                               data — check $all/$nin interaction.
-//   probeMain < probeNotP + 2 → the $or composition itself is at fault.
-//
-// REMOVE ALL OF THIS once diagnosed. It runs several extra queries on every
-// badge refresh, which is frequent (socket notify + every route change).
 export async function chatUnreadCount(req, res) {
   try {
     const blockedIds = await blockedIdsFor(req.userId);
 
-    // ─── UNREAD_DEBUG_V2 probes — remove once diagnosed ──────────────────────
-    const probeBase = await Conversation.find({
-      participants: { $all: [req.userId], $nin: blockedIds },
-    }).select('_id status initiator');
-
-    const probeNotP = await Conversation.find({
-      participants: { $all: [req.userId], $nin: blockedIds },
-      status: { $ne: 'pending' },
-    }).select('_id status');
-
-    // Every thread the viewer participates in, with NO block filter at all.
-    // If this returns more than probeBase, the $nin is dropping threads whose
-    // other participant is not actually blocked.
-    const probeNoBlock = await Conversation.find({
-      participants: req.userId,
-    }).select('_id status initiator');
-    // ─────────────────────────────────────────────────────────────────────────
-
     const convos = await Conversation.find({
       participants: { $all: [req.userId], $nin: blockedIds },
-      $or: [
-        // Inbox tab.
-        { status: { $ne: 'pending' } },
-        { status: 'pending', initiator: req.userId },
-        // Requests tab.
-        { status: 'pending', initiator: { $ne: req.userId } },
-      ],
     }).select('_id status initiator');
 
     // Partition into the two tabs. `status` is a strict enum and `initiator` is
@@ -207,50 +165,6 @@ export async function chatUnreadCount(req, res) {
       unreadIn(inboxIds),
       unreadIn(requestIds),
     ]);
-
-    // UNREAD_DEBUG_V2 — remove once diagnosed. See the note above.
-    console.log(
-      '[UNREAD_DEBUG_V2]',
-      JSON.stringify(
-        {
-          userId: String(req.userId),
-          blockedIds: blockedIds.map(String),
-
-          // The three probes. Compare their lengths to localise the drop.
-          probeBase: {
-            n: probeBase.length,
-            rows: probeBase.map((c) => ({
-              id: String(c._id),
-              status: c.status,
-              statusType: typeof c.status,
-              initiator: String(c.initiator),
-            })),
-          },
-          probeNotP: {
-            n: probeNotP.length,
-            rows: probeNotP.map((c) => ({ id: String(c._id), status: c.status })),
-          },
-          probeNoBlock: {
-            n: probeNoBlock.length,
-            rows: probeNoBlock.map((c) => ({
-              id: String(c._id),
-              status: c.status,
-              initiator: String(c.initiator),
-            })),
-          },
-
-          // The real query's outcome.
-          matched: convos.length,
-          inboxIds: inboxIds.map(String),
-          requestIds: requestIds.map(String),
-          inboxCount,
-          requestCount,
-          total: inboxCount + requestCount,
-        },
-        null,
-        2
-      )
-    );
 
     return res.json({ count: inboxCount + requestCount, requestCount });
   } catch (err) {
