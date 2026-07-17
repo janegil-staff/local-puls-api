@@ -64,6 +64,7 @@ export async function listConversations(req, res) {
       $or: [
         { status: { $ne: 'pending' } },
         { status: 'pending', initiator: req.userId },
+        { status: 'pending', initiator: { $ne: req.userId } },   // ← requests
       ],
     })
       .sort({ lastMessageAt: -1 })
@@ -101,6 +102,7 @@ export async function chatUnreadCount(req, res) {
       $or: [
         { status: { $ne: 'pending' } },
         { status: 'pending', initiator: req.userId },
+        { status: 'pending', initiator: { $ne: req.userId } },   // ← requests
       ],
     }).select('_id');
     const ids = convos.map((c) => c._id);
