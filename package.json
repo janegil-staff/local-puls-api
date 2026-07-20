@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "seed": "node src/lib/seed.js"
+    "seed:assets": "node scripts/uploadSeedAssets.js",
+    "seed:demo": "node scripts/seedDemoData.js",
+    "seed:demo:remove": "node scripts/removeDemoData.js",
+    "seed:all": "npm run seed:assets && npm run seed:demo"
   },
   "keywords": [],
   "author": "",
@@ -27,7 +30,9 @@
     "mongoose": "^9.7.4",
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
+    "openai": "^6.48.0",
     "resend": "^6.17.2",
+    "sharp": "^0.35.3",
     "socket.io": "^4.8.3"
   }
 }

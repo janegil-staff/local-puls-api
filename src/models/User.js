@@ -150,6 +150,11 @@ const userSchema = new mongoose.Schema(
     pinResetExpires: { type: Date },
     pinResetAttempts: { type: Number, default: 0 },
     pinResetRequests: [{ type: Date }],
+    isSeedUser: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
   },
   { timestamps: true }
 );
