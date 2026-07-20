@@ -217,13 +217,37 @@ function primaryUrl(photos) {
   return first?.url || '';
 }
 
+// Coarsen a place name to city-level. locationName is free-form and often
+// granular ("Bergen sentrum", "Majorstuen, Oslo") — granular enough to help
+// locate someone on a proximity app. We keep only the last comma-separated
+// segment (usually the city/area) and drop finer detail. Returns '' when there
+// is nothing to show.
+//
+// This is intentionally conservative: it's a display coarsening, not a
+// guarantee. The real protection against locating a user is the 100m coordinate
+// grid (snapCoords) plus the showDistance gate; this just avoids handing out a
+// street/neighbourhood label for free.
+export function coarseLocationName(name) {
+  if (!name || typeof name !== 'string') return '';
+  const parts = name.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return '';
+  // Last segment is typically the broadest (city/region). If the name has no
+  // comma, fall back to the whole string — it's already a single label.
+  return parts[parts.length - 1];
+}
+
 // Minimal public shape — never leak hash/email/dob.
 //
 // Includes age (derived from dob — the dob itself is never exposed), gender,
 // and bio so the public profile page can show them. These are the same
 // self-authored / low-sensitivity fields already surfaced on discovery cards
-// (toCard). role is still included as before; locationName remains as-is
-// (already coarsened + gated upstream).
+// (toCard). role is still included as before.
+//
+// locationName is deliberately NOT included here: the raw value is granular and
+// is not gated by showDistance. The controller decides whether to expose a
+// coarsened location (see coarseLocationName + the showDistance gate in
+// userController.getProfile). Serializing it here would reintroduce the leak on
+// every future caller of toPublic().
 userSchema.methods.toPublic = function toPublic() {
   return {
     id: this._id,
@@ -234,7 +258,6 @@ userSchema.methods.toPublic = function toPublic() {
     online: this.visibleOnline(),
     role: this.role,
     language: this.language,
-    locationName: this.locationName,
     age: ageFromDob(this.dob),
     gender: this.gender,
     bio: this.bio,

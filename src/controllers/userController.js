@@ -1,5 +1,5 @@
 // localpulse/server/src/controllers/userController.js
-import User from '../models/User.js';
+import User, { coarseLocationName } from '../models/User.js';
 import Follow from '../models/Follow.js';
 import Post from '../models/Post.js';
 import { notify } from '../lib/notify.js';
@@ -61,12 +61,25 @@ export async function getProfile(req, res) {
       }
     }
 
+    // Coarsened, gated location label. toPublic() deliberately no longer carries
+    // locationName because the raw value ("Bergen sentrum", "Majorstuen, Oslo")
+    // is granular and ungated. Here we:
+    //   1. gate it behind the same showDistance flag as distanceKm — a user who
+    //      hides distance should not have their town handed out instead, and
+    //   2. coarsen it to the broadest segment (city/region) via
+    //      coarseLocationName.
+    // Empty string when hidden or absent; the client drops the fact.
+    const locationName = (user.showDistance ?? true)
+      ? coarseLocationName(user.locationName)
+      : '';
+
     return res.json({
       profile: {
         ...user.toPublic(),
         gender: user.gender,
         age: user.dob ? Math.floor((Date.now() - new Date(user.dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
         language: user.language,
+        locationName,
         distanceKm,
         followerCount: followers,
         followingCount: following,
@@ -140,28 +153,30 @@ export async function followingFeed(req, res) {
   }
 }
 
+// Lightweight profile update path used by this router. The full dating-profile
+// editor (photos, dob, gender, language, privacy flags, username/email with PIN)
+// lives in profileController.updateProfile; this one handles only the small set
+// of fields the public-app profile edit sends: displayName and bio.
+//
+// Deliberately narrow: the previous version referenced an undefined `normalized`
+// and wrote a non-schema `avatarUrl`, both of which would throw. Email changes
+// are a login-credential operation and must go through profileController, which
+// validates format, checks the PIN, and enforces uniqueness — so email is
+// ignored here rather than half-handled.
 export async function updateProfile(req, res) {
   try {
-    console.log('[updateProfile] HIT — body keys:', Object.keys(req.body), 'email:', req.body.email);
-    const { displayName, bio, avatarUrl, email, pin } = req.body;
+    const { displayName, bio } = req.body;
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    if (displayName != null) user.displayName = displayName;
-    if (bio != null) user.bio = bio;
-    if (avatarUrl != null) user.avatarUrl = avatarUrl;
+    if (displayName != null) user.displayName = String(displayName).slice(0, 40);
+    if (bio != null) user.bio = String(bio).slice(0, 300);
 
-    if (email != null && email !== user.email) {
-      console.log('[updateProfile] email block entered:', email, 'vs', user.email);
-      const ok = await user.checkPin(String(pin || ''));
-      console.log('[updateProfile] pin ok?', ok);
-      if (!ok) return res.status(401).json({ error: 'Incorrect PIN' });
-      // ...
-      user.email = normalized;
-      console.log('[updateProfile] email set to:', user.email);
-    }
-
-    await user.save();
+    // validateBeforeSave: legacy documents carry invalid enum values (notably
+    // gender: 'man'), and Mongoose validates the WHOLE document on save. The
+    // two fields written here are bounded above, so skip whole-doc validation
+    // to avoid 500ing a name/bio edit on an unrelated legacy field.
+    await user.save({ validateBeforeSave: false });
     return res.json({ user: user.toPublic() });
   } catch (err) {
     console.error('updateProfile error', err);
