@@ -218,6 +218,12 @@ function primaryUrl(photos) {
 }
 
 // Minimal public shape — never leak hash/email/dob.
+//
+// Includes age (derived from dob — the dob itself is never exposed), gender,
+// and bio so the public profile page can show them. These are the same
+// self-authored / low-sensitivity fields already surfaced on discovery cards
+// (toCard). role is still included as before; locationName remains as-is
+// (already coarsened + gated upstream).
 userSchema.methods.toPublic = function toPublic() {
   return {
     id: this._id,
@@ -229,6 +235,9 @@ userSchema.methods.toPublic = function toPublic() {
     role: this.role,
     language: this.language,
     locationName: this.locationName,
+    age: ageFromDob(this.dob),
+    gender: this.gender,
+    bio: this.bio,
   };
 };
 
