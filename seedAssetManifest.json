@@ -1,0 +1,356 @@
+{
+  "avatars": {
+    "alexmoreno": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581453/localpulse/seed-assets/avatars/alexmoreno/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/alexmoreno/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "amaliemusic": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581455/localpulse/seed-assets/avatars/amaliemusic/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/amaliemusic/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "claraart": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581456/localpulse/seed-assets/avatars/claraart/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/claraart/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "danielcreates": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581457/localpulse/seed-assets/avatars/danielcreates/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/danielcreates/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "ellabakes": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581459/localpulse/seed-assets/avatars/ellabakes/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/ellabakes/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "emiliaro": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581460/localpulse/seed-assets/avatars/emiliaro/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/emiliaro/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "henrikoutside": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581461/localpulse/seed-assets/avatars/henrikoutside/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/henrikoutside/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "isabellexo": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581463/localpulse/seed-assets/avatars/isabellexo/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/isabellexo/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "jacobmoves": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581464/localpulse/seed-assets/avatars/jacobmoves/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/jacobmoves/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "lenaavaa": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581465/localpulse/seed-assets/avatars/lenaavaa/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/lenaavaa/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "lukaswayfarer": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581467/localpulse/seed-assets/avatars/lukaswayfarer/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/lukaswayfarer/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "matthewjames": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581468/localpulse/seed-assets/avatars/matthewjames/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/matthewjames/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "miafit": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581469/localpulse/seed-assets/avatars/miafit/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/miafit/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "noahfitness": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581471/localpulse/seed-assets/avatars/noahfitness/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/noahfitness/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "noraexplores": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581472/localpulse/seed-assets/avatars/noraexplores/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/noraexplores/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "olivercodes": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581473/localpulse/seed-assets/avatars/olivercodes/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/olivercodes/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "sarahlives": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581474/localpulse/seed-assets/avatars/sarahlives/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/sarahlives/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "sophiejade": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581476/localpulse/seed-assets/avatars/sophiejade/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/sophiejade/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "theomusic": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581477/localpulse/seed-assets/avatars/theomusic/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/theomusic/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ],
+    "williamfoodie": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581478/localpulse/seed-assets/avatars/williamfoodie/1.jpg",
+        "publicId": "localpulse/seed-assets/avatars/williamfoodie/1",
+        "width": 1024,
+        "height": 1024
+      }
+    ]
+  },
+  "posts": {
+    "city": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581480/localpulse/seed-assets/posts/city/1.jpg",
+        "publicId": "localpulse/seed-assets/posts/city/1",
+        "width": 1536,
+        "height": 1024
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581483/localpulse/seed-assets/posts/city/2.jpg",
+        "publicId": "localpulse/seed-assets/posts/city/2",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581485/localpulse/seed-assets/posts/city/3.jpg",
+        "publicId": "localpulse/seed-assets/posts/city/3",
+        "width": 1086,
+        "height": 1448
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581487/localpulse/seed-assets/posts/city/4.jpg",
+        "publicId": "localpulse/seed-assets/posts/city/4",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581489/localpulse/seed-assets/posts/city/5.jpg",
+        "publicId": "localpulse/seed-assets/posts/city/5",
+        "width": 1086,
+        "height": 1448
+      }
+    ],
+    "coffee": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581491/localpulse/seed-assets/posts/coffee/1.jpg",
+        "publicId": "localpulse/seed-assets/posts/coffee/1",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581493/localpulse/seed-assets/posts/coffee/2.jpg",
+        "publicId": "localpulse/seed-assets/posts/coffee/2",
+        "width": 1983,
+        "height": 793
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581494/localpulse/seed-assets/posts/coffee/3.jpg",
+        "publicId": "localpulse/seed-assets/posts/coffee/3",
+        "width": 1086,
+        "height": 1448
+      }
+    ],
+    "events": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581497/localpulse/seed-assets/posts/events/1.jpg",
+        "publicId": "localpulse/seed-assets/posts/events/1",
+        "width": 1536,
+        "height": 1024
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581498/localpulse/seed-assets/posts/events/2.jpg",
+        "publicId": "localpulse/seed-assets/posts/events/2",
+        "width": 1983,
+        "height": 793
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581500/localpulse/seed-assets/posts/events/3.jpg",
+        "publicId": "localpulse/seed-assets/posts/events/3",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581502/localpulse/seed-assets/posts/events/4.jpg",
+        "publicId": "localpulse/seed-assets/posts/events/4",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581504/localpulse/seed-assets/posts/events/5.jpg",
+        "publicId": "localpulse/seed-assets/posts/events/5",
+        "width": 1086,
+        "height": 1448
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581506/localpulse/seed-assets/posts/events/6.jpg",
+        "publicId": "localpulse/seed-assets/posts/events/6",
+        "width": 1086,
+        "height": 1448
+      }
+    ],
+    "fitness": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581508/localpulse/seed-assets/posts/fitness/1.jpg",
+        "publicId": "localpulse/seed-assets/posts/fitness/1",
+        "width": 1536,
+        "height": 1024
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581510/localpulse/seed-assets/posts/fitness/2.jpg",
+        "publicId": "localpulse/seed-assets/posts/fitness/2",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581512/localpulse/seed-assets/posts/fitness/3.jpg",
+        "publicId": "localpulse/seed-assets/posts/fitness/3",
+        "width": 1086,
+        "height": 1448
+      }
+    ],
+    "food": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581515/localpulse/seed-assets/posts/food/1.jpg",
+        "publicId": "localpulse/seed-assets/posts/food/1",
+        "width": 1536,
+        "height": 1024
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581517/localpulse/seed-assets/posts/food/2.jpg",
+        "publicId": "localpulse/seed-assets/posts/food/2",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581519/localpulse/seed-assets/posts/food/3.jpg",
+        "publicId": "localpulse/seed-assets/posts/food/3",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581521/localpulse/seed-assets/posts/food/4.jpg",
+        "publicId": "localpulse/seed-assets/posts/food/4",
+        "width": 1086,
+        "height": 1448
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581523/localpulse/seed-assets/posts/food/5.jpg",
+        "publicId": "localpulse/seed-assets/posts/food/5",
+        "width": 1402,
+        "height": 1122
+      }
+    ],
+    "marketplace": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581525/localpulse/seed-assets/posts/marketplace/1.jpg",
+        "publicId": "localpulse/seed-assets/posts/marketplace/1",
+        "width": 1122,
+        "height": 1402
+      }
+    ],
+    "music": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581526/localpulse/seed-assets/posts/music/1.jpg",
+        "publicId": "localpulse/seed-assets/posts/music/1",
+        "width": 1983,
+        "height": 793
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581528/localpulse/seed-assets/posts/music/2.jpg",
+        "publicId": "localpulse/seed-assets/posts/music/2",
+        "width": 1402,
+        "height": 1122
+      }
+    ],
+    "outdoors": [
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581531/localpulse/seed-assets/posts/outdoors/1.jpg",
+        "publicId": "localpulse/seed-assets/posts/outdoors/1",
+        "width": 1536,
+        "height": 1024
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581533/localpulse/seed-assets/posts/outdoors/2.jpg",
+        "publicId": "localpulse/seed-assets/posts/outdoors/2",
+        "width": 1983,
+        "height": 793
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581535/localpulse/seed-assets/posts/outdoors/3.jpg",
+        "publicId": "localpulse/seed-assets/posts/outdoors/3",
+        "width": 1402,
+        "height": 1122
+      },
+      {
+        "url": "https://res.cloudinary.com/dbcdsonhz/image/upload/v1784581537/localpulse/seed-assets/posts/outdoors/4.jpg",
+        "publicId": "localpulse/seed-assets/posts/outdoors/4",
+        "width": 1086,
+        "height": 1448
+      }
+    ]
+  }
+}

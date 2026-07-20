@@ -18,7 +18,7 @@ const __dirname = path.dirname(__filename);
 const MONGODB_URI = process.env.MONGO_URI;
 
 const DEMO_PASSWORD =
-  process.env.DEMO_USER_PASSWORD || 'Demo1234!';
+  process.env.DEMO_USER_PASSWORD || '2255';
 
 const MANIFEST_PATH = path.resolve(
   __dirname,
@@ -468,7 +468,7 @@ const DEMO_POSTS = [
     imageCategory: 'lostfound',
     ...PLACES.grunerlokka,
   },
-
+  
   // Text-only post 1
   {
     username: 'claraart',

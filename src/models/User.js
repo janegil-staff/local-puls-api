@@ -267,6 +267,7 @@ userSchema.methods.toPublic = function toPublic() {
     gender: this.gender,
     bio: this.bio,
     neighborhood: this.neighborhood || '',
+    interests: this.interests || [],
     memberSince: this.createdAt,
   };
 };
