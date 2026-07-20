@@ -10,7 +10,8 @@
     "seed:assets:remove": "node scripts/removeSeedAssets.js",
     "seed:demo": "node scripts/seedDemoData.js",
     "seed:demo:remove": "node scripts/removeDemoData.js",
-    "seed:all": "npm run seed:assets && npm run seed:demo"
+    "seed:all": "npm run seed:assets && npm run seed:demo",
+    "seed:reset": "node scripts/removeSeedAssets.js --confirm && node scripts/removeDemoData.js && node scripts/uploadSeedAssets.js && node scripts/seedDemoData.js"
   },
   "keywords": [],
   "author": "",

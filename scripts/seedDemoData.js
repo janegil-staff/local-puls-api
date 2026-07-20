@@ -12,6 +12,24 @@ import mongoose from 'mongoose';
 import User from '../src/models/User.js';
 import Post from '../src/models/Post.js';
 
+// Build a Date of Birth from an age in years. Returns a Date roughly `age`
+// years ago. Used for seeding: the User model stores `dob` and derives `age`
+// as a virtual, so seed data specified by age must be converted to a dob.
+function getDOBFromAge(age) {
+  const n = Number(age);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`Invalid age: ${age}`);
+  }
+  const now = new Date();
+  // Subtract the years from today's date. Using UTC avoids timezone drift.
+  const dob = new Date(Date.UTC(
+    now.getUTCFullYear() - n,
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  ));
+  return dob;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -41,183 +59,204 @@ const VALID_POST_TYPES = new Set([
 const DEMO_PROFILES = [
   {
     username: 'isabellexo',
+    displayName: username,
     email: 'isabelle@example.test',
-    displayName: 'Isabelle Larsen',
-    age: 25,
+    dob: getDOBFromAge(30),
     gender: 'female',
     bio: 'Coffee, city walks, photography and meeting new people.',
     neighborhood: 'Grünerløkka',
+    profileComplete: true
   },
   {
     username: 'sophiejade',
+    displayName: username,
     email: 'sophie@example.test',
-    displayName: 'Sophie Berg',
-    age: 27,
+    dob: getDOBFromAge(25),
     gender: 'female',
     bio: 'Designer, brunch enthusiast and weekend explorer.',
     neighborhood: 'Frogner',
+    profileComplete: true
   },
   {
     username: 'lenaavaa',
+    displayName: username,
     email: 'lena@example.test',
-    displayName: 'Lena Hansen',
-    age: 24,
+    dob: getDOBFromAge(21),
     gender: 'female',
     bio: 'Music, books, yoga and quiet cafés.',
     neighborhood: 'St. Hanshaugen',
+    profileComplete: true
   },
   {
     username: 'emiliaro',
+    displayName: username,
     email: 'emilia@example.test',
-    displayName: 'Emilia Røed',
-    age: 29,
+    dob: getDOBFromAge(32),
     gender: 'female',
     bio: 'Creative soul who enjoys art, food and local events.',
     neighborhood: 'Tøyen',
+    profileComplete: true
   },
   {
     username: 'noraexplores',
+    displayName: username,
     email: 'nora@example.test',
-    displayName: 'Nora Eriksen',
-    age: 26,
+    dob: getDOBFromAge(33),
     gender: 'female',
     bio: 'Always looking for a new trail, view or hidden gem.',
     neighborhood: 'Sagene',
+    profileComplete: true
   },
   {
     username: 'amaliemusic',
+    displayName: username,
     email: 'amalie@example.test',
-    displayName: 'Amalie Solberg',
-    age: 28,
+    dob: getDOBFromAge(20),
     gender: 'female',
     bio: 'Musician, concert lover and occasional songwriter.',
     neighborhood: 'Majorstuen',
+    profileComplete: true
   },
   {
     username: 'miafit',
+    displayName: username,
     email: 'mia@example.test',
-    displayName: 'Mia Kristiansen',
-    age: 25,
+    dob: getDOBFromAge(40),
     gender: 'female',
     bio: 'Running, strength training and healthy food.',
     neighborhood: 'Bislett',
+    profileComplete: true
   },
   {
     username: 'claraart',
+    displayName: username,
     email: 'clara@example.test',
-    displayName: 'Clara Nilsen',
-    age: 30,
+    dob: getDOBFromAge(37),
     gender: 'female',
     bio: 'Illustrator interested in exhibitions and local culture.',
     neighborhood: 'Gamle Oslo',
+    profileComplete: true
   },
   {
     username: 'ellabakes',
+    displayName: username,
     email: 'ella@example.test',
-    displayName: 'Ella Johansen',
-    age: 26,
+    dob: getDOBFromAge(45),
     gender: 'female',
     bio: 'Baking, sharing recipes and discovering local bakeries.',
     neighborhood: 'Bjørvika',
+    profileComplete: true
   },
   {
     username: 'sarahlives',
+    displayName: username,
     email: 'sarah@example.test',
-    displayName: 'Sarah Lie',
-    age: 28,
+    dob: getDOBFromAge(34),
     gender: 'female',
     bio: 'Enjoying city life one neighborhood at a time.',
     neighborhood: 'Aker Brygge',
+    profileComplete: true
   },
   {
     username: 'matthewjames',
+    displayName: username,
     email: 'matthew@example.test',
-    displayName: 'Matthew James',
-    age: 29,
+    dob: getDOBFromAge(25),
     gender: 'male',
     bio: 'Coffee, football, travel and spontaneous plans.',
     neighborhood: 'Grünerløkka',
+    profileComplete: true
   },
   {
     username: 'alexmoreno',
+    displayName: username,
     email: 'alex@example.test',
-    displayName: 'Alex Moreno',
-    age: 27,
+    dob: getDOBFromAge(32),
     gender: 'male',
     bio: 'Designer who enjoys food, music and city photography.',
     neighborhood: 'Frogner',
+    profileComplete: true
   },
   {
     username: 'lukaswayfarer',
+    displayName: username,
     email: 'lukas@example.test',
-    displayName: 'Lukas Andersen',
-    age: 31,
+    dob: getDOBFromAge(24),
     gender: 'male',
     bio: 'Hiking, travelling and searching for the best views.',
     neighborhood: 'St. Hanshaugen',
+    profileComplete: true
   },
   {
     username: 'olivercodes',
+    displayName: username,
     email: 'oliver@example.test',
-    displayName: 'Oliver Dahl',
-    age: 28,
+    dob: getDOBFromAge(26),
     gender: 'male',
     bio: 'Developer, gamer and regular at local coffee shops.',
     neighborhood: 'Tøyen',
+    profileComplete: true
   },
   {
     username: 'noahfitness',
+    displayName: username,
     email: 'noah@example.test',
-    displayName: 'Noah Strand',
-    age: 25,
+    dob: getDOBFromAge(35),
     gender: 'male',
     bio: 'Training, running and helping people stay active.',
     neighborhood: 'Bislett',
+    profileComplete: true
   },
   {
     username: 'henrikoutside',
+    displayName: username,
     email: 'henrik@example.test',
-    displayName: 'Henrik Moe',
-    age: 32,
+    dob: getDOBFromAge(30),
     gender: 'male',
     bio: 'Outdoors whenever possible. Hiking, skiing and cycling.',
     neighborhood: 'Sagene',
+    profileComplete: true
   },
   {
     username: 'danielcreates',
+    displayName: username,
     email: 'daniel@example.test',
-    displayName: 'Daniel Hagen',
-    age: 27,
+    dob: getDOBFromAge(27),
     gender: 'male',
     bio: 'Filmmaker interested in stories, art and collaboration.',
     neighborhood: 'Gamle Oslo',
+    profileComplete: true
   },
   {
     username: 'williamfoodie',
+    displayName: username,
     email: 'william@example.test',
     displayName: 'William Lund',
-    age: 30,
+    dob: getDOBFromAge(25),
     gender: 'male',
     bio: 'Trying restaurants and sharing local food recommendations.',
     neighborhood: 'Bjørvika',
+    profileComplete: true
   },
   {
     username: 'theomusic',
+    displayName: username,
     email: 'theo@example.test',
-    displayName: 'Theo Karlsen',
-    age: 26,
+    dob: getDOBFromAge(25),
     gender: 'male',
     bio: 'Guitar, live music and relaxed evenings with friends.',
     neighborhood: 'Majorstuen',
+    profileComplete: true
   },
   {
     username: 'jacobmoves',
+    displayName: username,
     email: 'jacob@example.test',
-    displayName: 'Jacob Eide',
-    age: 29,
+    dob: getDOBFromAge(36),
     gender: 'male',
     bio: 'Dancing, movement and discovering new local activities.',
     neighborhood: 'Aker Brygge',
+    profileComplete: true
   },
 ];
 
@@ -468,7 +507,7 @@ const DEMO_POSTS = [
     imageCategory: 'lostfound',
     ...PLACES.grunerlokka,
   },
-  
+
   // Text-only post 1
   {
     username: 'claraart',
@@ -694,7 +733,7 @@ function buildUserData({
     email: profile.email,
     displayName: profile.displayName,
     passwordHash,
-    age: profile.age,
+    dob: profile.dob,
     gender: profile.gender,
     bio: profile.bio,
     neighborhood: profile.neighborhood,
@@ -821,7 +860,7 @@ function randomDateWithinLastDays(days) {
 
   return new Date(
     Date.now() -
-      Math.floor(Math.random() * maximumOffset),
+    Math.floor(Math.random() * maximumOffset),
   );
 }
 
@@ -972,8 +1011,7 @@ async function seedPosts({
   );
 
   console.log(
-    `Text-only posts: ${
-      posts.length - postsWithImages
+    `Text-only posts: ${posts.length - postsWithImages
     }`,
   );
 
