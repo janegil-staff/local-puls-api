@@ -261,11 +261,7 @@ userSchema.methods.toPublic = function toPublic() {
     age: ageFromDob(this.dob),
     gender: this.gender,
     bio: this.bio,
-    // Self-authored free text ("local flavor"), not GPS-derived — safe to show
-    // ungated, unlike locationName.
     neighborhood: this.neighborhood || '',
-    // "Member since". createdAt comes from { timestamps: true }. Exposed as an
-    // ISO string; the client formats it. Low sensitivity — account age only.
     memberSince: this.createdAt,
   };
 };
