@@ -26,19 +26,6 @@ function ageFromDob(dob) {
   return Math.floor(diff / (365.25 * 24 * 60 * 60 * 1000));
 }
 
-// A GeoJSON point.
-//
-// This MUST be a real sub-schema, not an inline nested object. Written inline
-// as `{ type: { type: {...}, coordinates: {...} }, default: undefined }`,
-// Mongoose reads the outer `type:` key as a *type declaration* — so the
-// `default: undefined` is a sibling of that declaration and never applies to
-// the path. Every new document then materialises a partial `{ type: 'Point' }`
-// with no coordinates, which is invalid GeoJSON, and any 2dsphere index over
-// the path throws `Can't extract geo keys` on insert.
-//
-// Declared as a sub-schema, the outer `type: pointSchema` is a genuine type,
-// `default: undefined` binds to the path, and `required: true` on the inner
-// fields makes a half-formed point fail validation instead of reaching Mongo.
 const pointSchema = new mongoose.Schema(
   {
     type: { type: String, enum: ['Point'], required: true },
@@ -47,15 +34,6 @@ const pointSchema = new mongoose.Schema(
   { _id: false },
 );
 
-// A stored photo: the delivery URL, plus the Cloudinary public_id needed to
-// destroy it when the account or the photo is deleted.
-//
-// `publicId` is NOT required. Documents written before this schema existed hold
-// bare URL strings, and the migration below promotes them by parsing the id out
-// of the URL — a parse that fails on transformed URLs and leaves publicId unset.
-// Requiring it would make those users unable to save their profile at all. The
-// deletion path skips entries without one, orphaning the asset; a storage cost,
-// not a correctness bug.
 const photoSchema = new mongoose.Schema(
   {
     url: { type: String, required: true },
@@ -315,5 +293,11 @@ userSchema.methods.toSelf = function toSelf() {
     emailVerified: Boolean(this.emailVerified),
   };
 };
+
+export function defaultShowFor(gender) {
+  if (gender === 'female') return 'male';
+  if (gender === 'male') return 'female';
+  return 'everyone';
+}
 
 export default mongoose.model('User', userSchema);

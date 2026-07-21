@@ -1,6 +1,6 @@
 // localpulse/server/src/controllers/authController.js
 import crypto from 'crypto';
-import User from '../models/User.js';
+import User, { defaultShowFor } from '../models/User.js';
 import { signToken } from '../middleware/auth.js';
 import bcrypt from 'bcryptjs';
 import { sendVerificationEmail, sendPinResetEmail } from '../lib/mail.js';
@@ -191,7 +191,13 @@ export async function register(req, res) {
 
     const user = new User({ username, email, displayName: displayName || username });
     if (dob) user.dob = dob;
-    if (gender) user.gender = gender;
+    if (gender) {
+      user.gender = gender;
+      // Seed the discovery filter from the user's own gender: female → men,
+      // male → women, nonbinary/other → everyone. A default only — the user
+      // can change "Show me" in settings afterward.
+      user.preferences.show = defaultShowFor(gender);
+    }
 
     // setPin writes BOTH pinHash and passwordHash — see the method on the
     // model. There is no separate password; login accepts the PIN via either

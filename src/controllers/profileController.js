@@ -1,5 +1,5 @@
 // localpulse/server/src/controllers/profileController.js
-import User, { GENDERS, ORIENT_SHOW, normalizePhotos } from '../models/User.js';
+import User, { GENDERS, ORIENT_SHOW, normalizePhotos, defaultShowFor } from '../models/User.js';
 import Swipe from '../models/Swipe.js';
 import Match from '../models/Match.js';
 import Message from '../models/Message.js';
@@ -70,7 +70,17 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
   if (gender !== undefined) {
     if (!GENDERS.includes(gender)) throw ApiError.badRequest('Invalid gender');
+    const hadGender = Boolean(user.gender);
     user.gender = gender;
+    // First time gender is set (onboarding) and the user hasn't chosen a
+    // discovery filter yet → seed it from their gender: female → men,
+    // male → women, nonbinary/other → everyone. Guarded on both conditions so
+    // changing your gender later never overwrites a "Show me" you picked
+    // yourself, and 'everyone' (the schema default) counts as "unchosen".
+    if (!hadGender && (!user.preferences?.show || user.preferences.show === 'everyone')) {
+      if (!user.preferences) user.preferences = {};
+      user.preferences.show = defaultShowFor(gender);
+    }
   }
   if (displayName !== undefined) user.displayName = displayName;
   if (bio !== undefined) user.bio = bio;
