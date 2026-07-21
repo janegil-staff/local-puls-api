@@ -15,6 +15,10 @@ import { validate } from '../middleware/validate.js';
 
 const router = Router();
 
+router.post('/conversations/:id/read', requireAuth, markRead);
+router.post('/conversations/:id/accept', requireAuth, acceptConversation);
+router.get('/unread-count', requireAuth, chatUnreadCount);
+
 router.get('/conversations', requireAuth, listConversations);
 router.get('/requests', requireAuth, listRequests);
 
@@ -30,8 +34,5 @@ router.post(
   validate({ body: { text: { required: true, type: 'string', min: 1, max: 2000 } } }),
   sendMessage
 );
-
-router.get('/unread-count', requireAuth, chatUnreadCount);
-router.post('/conversations/:id/read', requireAuth, markRead);
 
 export default router;

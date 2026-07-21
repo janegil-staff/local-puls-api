@@ -6,17 +6,17 @@ import profileRoutes from './profile.routes.js';
 import discoveryRoutes from './discovery.routes.js';
 import postRoutes from './post.routes.js';
 import userRoutes from './user.routes.js';
-import chatRoutes from './chat.routes.js';
+import {chatRoutes, acceptConversation} from './chat.routes.js';
 import notificationRoutes, { pushRouter } from './notification.routes.js';
 import adminRoutes from './admin.routes.js';
 import miscRoutes from './misc.routes.js';
 
 const router = Router();
-
+router.use('/posts', postRoutes);
 router.use('/auth', authRoutes);
 router.use('/me', profileRoutes);
 router.use('/', discoveryRoutes);      // /discovery, /swipe, /matches
-router.use('/posts', postRoutes);
+
 router.use('/users', userRoutes);
 router.use('/chat', chatRoutes);
 router.use('/notifications', notificationRoutes);
