@@ -236,11 +236,16 @@ export async function getMessages(req, res) {
       return res.status(400).json({ error: 'Invalid conversation id' });
     }
 
-    const convo = await Conversation.findById(id);
+    const convo = await Conversation.findById(id).populate('participants');
     if (!convo) return res.status(404).json({ error: 'Conversation not found' });
-    if (!convo.participants.map((p) => String(p)).includes(me)) {
+    if (!convo.participants.map((p) => String(p._id)).includes(me)) {
       return res.status(403).json({ error: 'Not a participant' });
     }
+
+    // The other participant — the chat header needs this to show name + avatar.
+    // Deep-linking to /messages/:id doesn't load the list, so supply it here.
+    const other = convo.participants.find((p) => String(p._id) !== me);
+    const otherUser = other ? other.toPublic() : null;
 
     const query = { conversation: id };
     if (before) query.createdAt = { $lt: new Date(before) };
@@ -251,7 +256,12 @@ export async function getMessages(req, res) {
       .populate('sender');
 
     const messages = docs.reverse().map((m) => m.toClient());
-    return res.json({ messages });
+    return res.json({
+      messages,
+      otherUser,
+      user: otherUser,
+      conversation: { id: String(convo._id), status: convo.status, initiator: String(convo.initiator) },
+    });
   } catch (err) {
     console.error('[getMessages] failed:', err);
     return res.status(500).json({ error: 'Failed to load messages' });
