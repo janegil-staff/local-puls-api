@@ -28,10 +28,21 @@ async function persistMessage({ req, conversationId, senderId, text, imageUrl })
     return { status: 403, error: 'Not a participant' };
   }
 
-  // Pending gate: only the initiator may send into a pending conversation
-  // (their one opener). The recipient must accept before replying.
-  if (convo.status === 'pending' && String(convo.initiator) !== senderId) {
-    return { status: 403, error: 'Accept the request before replying' };
+  // Pending gate:
+  //  - The recipient cannot send anything until they accept.
+  //  - The initiator gets exactly ONE opener; further messages are blocked
+  //    until the recipient accepts. This stops pre-acceptance spam.
+  if (convo.status === 'pending') {
+    if (String(convo.initiator) !== senderId) {
+      return { status: 403, error: 'Accept the request before replying' };
+    }
+    const alreadySent = await Message.countDocuments({
+      conversation: convo._id,
+      sender: senderId,
+    });
+    if (alreadySent >= 1) {
+      return { status: 403, error: 'Wait for your request to be accepted before sending more.' };
+    }
   }
 
   const message = await Message.create({
@@ -93,10 +104,12 @@ export async function sendMessage(req, res) {
 export async function listConversations(req, res) {
   try {
     const me = currentUserId(req);
+    // No .lean(): we need the User document methods (toPublic) so the avatar
+    // resolves from photos[0] via the model's own serializer. avatarUrl is a
+    // DERIVED field — it does not exist on the raw document.
     const convos = await Conversation.find({ participants: me, status: 'accepted' })
       .sort({ lastMessageAt: -1 })
-      .populate('participants')
-      .lean();
+      .populate('participants');
 
     const rows = convos.map((c) => {
       const other = (c.participants || []).find((p) => String(p._id) !== me);
@@ -105,9 +118,8 @@ export async function listConversations(req, res) {
         status: c.status,
         lastMessage: c.lastMessage,
         lastMessageAt: c.lastMessageAt,
-        user: other
-          ? { id: String(other._id), username: other.username, avatarUrl: other.avatarUrl }
-          : null,
+        otherUser: other ? other.toPublic() : null,
+        user: other ? other.toPublic() : null,
       };
     });
     return res.json({ conversations: rows });
@@ -125,8 +137,7 @@ export async function listRequests(req, res) {
       participants: me, status: 'pending', initiator: { $ne: me },
     })
       .sort({ lastMessageAt: -1 })
-      .populate('participants')
-      .lean();
+      .populate('participants');
 
     const rows = convos.map((c) => {
       const other = (c.participants || []).find((p) => String(p._id) !== me);
@@ -134,9 +145,8 @@ export async function listRequests(req, res) {
         id: String(c._id),
         lastMessage: c.lastMessage,
         lastMessageAt: c.lastMessageAt,
-        user: other
-          ? { id: String(other._id), username: other.username, avatarUrl: other.avatarUrl }
-          : null,
+        otherUser: other ? other.toPublic() : null,
+        user: other ? other.toPublic() : null,
       };
     });
     return res.json({ requests: rows });
