@@ -1,46 +1,134 @@
 // localpulse/server/src/middleware/auth.js
+
 import jwt from 'jsonwebtoken';
-import { config } from '../config/index.js';
 import User from '../models/User.js';
+import { config } from '../config/index.js';
 
+/**
+ * Create a JWT for a logged-in user.
+ *
+ * The user ID is stored in the standard `sub` claim.
+ */
 export function signToken(userId) {
-  return jwt.sign({ sub: String(userId) }, config.jwtSecret, { expiresIn: config.jwtExpiresIn });
+  if (!userId) {
+    throw new Error('Cannot sign token without a user ID');
+  }
+
+  return jwt.sign(
+    {
+      sub: String(userId),
+    },
+    config.jwtSecret,
+    {
+      expiresIn: config.jwtExpiresIn,
+    }
+  );
 }
 
-// Hard auth — rejects if no valid token, OR if the account is banned.
-//
-// The ban check costs one findById per authed request. That's the price of a
-// ban taking effect immediately: without it, a banned user's already-issued
-// token stays valid until it expires (30 days), so the ban does nothing to a
-// live session. The lookup is a single indexed _id read; fine at this scale.
-// A banned user gets 403 'Account suspended', which the client treats as a
-// forced logout (see client.js request()).
+/**
+ * Express authentication middleware.
+ *
+ * Expected header:
+ * Authorization: Bearer <token>
+ */
 export async function requireAuth(req, res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'Not authenticated' });
   try {
+    const authorization = req.headers.authorization;
+
+    if (!authorization?.startsWith('Bearer ')) {
+      return res.status(401).json({
+        error: 'Authentication required',
+      });
+    }
+
+    const token = authorization.slice('Bearer '.length).trim();
+
+    if (!token) {
+      return res.status(401).json({
+        error: 'Authentication required',
+      });
+    }
+
     const payload = jwt.verify(token, config.jwtSecret);
-    const user = await User.findById(payload.sub).select('banned');
-    if (!user) return res.status(401).json({ error: 'Invalid or expired token' });
-    if (user.banned) return res.status(403).json({ error: 'Account suspended' });
-    req.userId = user._id;
-    next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+    const userId = payload.sub || payload.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        error: 'Invalid token',
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(401).json({
+        error: 'User not found',
+      });
+    }
+
+    // Common properties used by controllers.
+    req.user = user;
+    req.userId = String(user._id);
+
+    return next();
+  } catch (err) {
+    if (err instanceof jwt.TokenExpiredError) {
+      return res.status(401).json({
+        error: 'Token expired',
+      });
+    }
+
+    if (err instanceof jwt.JsonWebTokenError) {
+      return res.status(401).json({
+        error: 'Invalid token',
+      });
+    }
+
+    console.error('[auth] authentication failed:', err);
+
+    return res.status(500).json({
+      error: 'Authentication failed',
+    });
   }
 }
 
-// Soft auth — attaches userId if present, but doesn't block. Does NOT check
-// banned: callers using optionalAuth (public feed, public profile) already gate
-// any write behind requireAuth, and a banned user reading public content is
-// harmless. Keeping this lookup-free preserves the fast path for anonymous and
-// logged-out reads.
-export function optionalAuth(req, _res, next) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
-  if (token) {
-    try { req.userId = jwt.verify(token, config.jwtSecret).sub; } catch { /* ignore */ }
+/**
+ * Optional authentication middleware.
+ *
+ * Requests continue when no token is supplied, but req.user and req.userId
+ * are populated when a valid token is present.
+ */
+export async function optionalAuth(req, res, next) {
+  try {
+    const authorization = req.headers.authorization;
+
+    if (!authorization?.startsWith('Bearer ')) {
+      return next();
+    }
+
+    const token = authorization.slice('Bearer '.length).trim();
+
+    if (!token) {
+      return next();
+    }
+
+    const payload = jwt.verify(token, config.jwtSecret);
+    const userId = payload.sub || payload.id;
+
+    if (!userId) {
+      return next();
+    }
+
+    const user = await User.findById(userId);
+
+    if (user) {
+      req.user = user;
+      req.userId = String(user._id);
+    }
+
+    return next();
+  } catch {
+    // Optional authentication should not block the request.
+    return next();
   }
-  next();
 }

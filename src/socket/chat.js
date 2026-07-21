@@ -14,34 +14,67 @@
 //   app.set('io', io);
 //   registerChatSocket(io);
 //
-import jwt from 'jsonwebtoken';
+import {signToken} from '../middleware/auth.js';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import { config } from '../config/index.js';
+import jwt from 'jsonwebtoken';
 
 export function registerChatSocket(io) {
-  // Handshake auth — token comes from client `auth: (cb) => cb({ token })`.
   io.use((socket, next) => {
     try {
       const token = socket.handshake.auth?.token;
-      if (!token) return next(new Error('No token'));
+
+      if (!token) {
+        return next(new Error('No token'));
+      }
+
       const payload = jwt.verify(token, config.jwtSecret);
-      socket.userId = String(payload.sub);
+      const userId = payload.sub || payload.id;
+
+      if (!userId) {
+        return next(new Error('Invalid token payload'));
+      }
+
+      socket.userId = String(userId);
       return next();
-    } catch {
+    } catch (err) {
+      console.error('[socket auth] failed:', err.message);
       return next(new Error('Unauthorized'));
     }
   });
 
   io.on('connection', (socket) => {
     socket.join(`user:${socket.userId}`);
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('[socket] connected', socket.id, 'user', socket.userId);
+console.log('[socket] connected', socket.id, 'user', socket.userId);
+
+socket.on('chat:join', async ({ conversationId } = {}, ack) => {
+  try {
+    if (!conversationId) {
+      return ack?.({ error: 'Missing conversation ID' });
     }
 
-    socket.on('chat:join', ({ conversationId }) => {
-      if (conversationId) socket.join(`conversation:${conversationId}`);
+    const convo = await Conversation.findOne({
+      _id: conversationId,
+      participants: socket.userId,
+    }).select('_id');
+
+    if (!convo) {
+      return ack?.({ error: 'Conversation not found or access denied' });
+    }
+
+    await socket.join(`conversation:${conversationId}`);
+    console.log('[socket chat:join]', {
+      userId: socket.userId,
+      conversationId,
     });
+
+    return ack?.({ ok: true });
+  } catch (err) {
+    console.error('[socket chat:join] failed:', err);
+    return ack?.({ error: 'Server error' });
+  }
+});
 
     socket.on('chat:leave', ({ conversationId }) => {
       if (conversationId) socket.leave(`conversation:${conversationId}`);
@@ -93,20 +126,7 @@ export function registerChatSocket(io) {
 
       return { ok: true, message: payload };
     }
-
-    // Text send — THE MISSING WRITE PATH. Mobile emits chat:send.
-    socket.on('chat:send', async ({ conversationId, text }, ack) => {
-      try {
-        if (!conversationId || !text?.trim()) {
-          return ack?.({ error: 'Missing fields' });
-        }
-        const result = await persistAndBroadcast({ conversationId, text });
-        return ack?.(result);
-      } catch (err) {
-        console.error('[socket chat:send] failed:', err);
-        return ack?.({ error: 'Server error' });
-      }
-    });
+console.log('[socket] connected', socket.id, 'user', socket.userId);
 
     // Image send — mobile emits after uploading, awaits ack for rejections.
     socket.on('chat:sendImage', async ({ conversationId, imageUrl }, ack) => {
