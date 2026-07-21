@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+    "seed:posts": "node scripts/seed-comments.cjs",
+    "seed:posts:remove": "node scripts/unseed-comments.cjs",
     "seed:assets": "node scripts/uploadSeedAssets.js",
     "seed:assets:remove": "node scripts/removeSeedAssets.js",
     "seed:demo": "node scripts/seedDemoData.js",

@@ -1,5 +1,6 @@
 // localpulse/server/src/controllers/postController.js
 import Post, { POST_TYPES } from '../models/Post.js';
+import Comment from '../models/Comment.js';
 import Block from '../models/Block.js';
 import SavedPost from '../models/SavedPost.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -26,7 +27,7 @@ export const createPost = asyncHandler(async (req, res) => {
   });
 
   await post.populate('author');
-  res.status(201).json({ post: post.toClient(req.userId) });
+  res.status(201).json({ post: { ...post.toClient(req.userId), commentCount: 0 } });
 });
 
 // Feed: always newest-first. When coords are given, posts within range are
@@ -82,8 +83,20 @@ export const getFeed = asyncHandler(async (req, res) => {
     savedSet = new Set(saved.map((s) => String(s.post)));
   }
 
+  // Comment counts — one grouped query for the whole page (compute-on-read).
+  const postIds = posts.map((p) => p._id);
+  const countRows = await Comment.aggregate([
+    { $match: { post: { $in: postIds } } },
+    { $group: { _id: '$post', n: { $sum: 1 } } },
+  ]);
+  const commentCounts = Object.fromEntries(countRows.map((r) => [String(r._id), r.n]));
+
   res.json({
-    posts: posts.map((p) => ({ ...p.toClient(req.userId), savedByMe: savedSet.has(String(p._id)) })),
+    posts: posts.map((p) => ({
+      ...p.toClient(req.userId),
+      savedByMe: savedSet.has(String(p._id)),
+      commentCount: commentCounts[String(p._id)] || 0,
+    })),
   });
 });
 
