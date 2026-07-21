@@ -219,6 +219,24 @@ export function coarseLocationName(name) {
   return parts[parts.length - 1];
 }
 
+// What OTHER users may see of my location label. Two gates, both of which must
+// pass or we return '':
+//   1. showDistance — the same flag that hides my distance also hides my place
+//      label. Handing out "Majorstuen, Oslo" while suppressing "2 km away" is
+//      incoherent; the label is often MORE locating than the distance.
+//   2. coarseLocationName — even when shown, we only ever expose the broadest
+//      comma-separated segment (city/region), never the raw granular value.
+//
+// `?? true` because accounts created before showDistance existed have it
+// undefined and must be treated as opted-in, matching every other reader.
+//
+// Prefers locationName (coarsened) and falls back to neighbourhood, which is
+// self-authored local-flavour text and not derived from GPS.
+userSchema.methods.visibleLocationName = function visibleLocationName() {
+  if ((this.showDistance ?? true) === false) return '';
+  return coarseLocationName(this.locationName) || this.neighborhood || '';
+};
+
 // Minimal public shape — never leak hash/email/dob.
 //
 // Includes age (derived from dob — the dob itself is never exposed), gender,
@@ -251,6 +269,11 @@ userSchema.methods.toPublic = function toPublic() {
 };
 
 // Discovery card — what another user sees when browsing.
+//
+// locationName is coarsened AND gated by showDistance via visibleLocationName().
+// Previously this serialized the raw this.locationName ("Bergen sentrum",
+// "Majorstuen, Oslo") to every browsing user, bypassing both the city-level
+// coarsening and the showDistance privacy gate — the leak this method fixes.
 userSchema.methods.toCard = function toCard() {
   return {
     id: this._id,
@@ -261,7 +284,7 @@ userSchema.methods.toCard = function toCard() {
     photos: normalizePhotos(this.photos),
     interests: this.interests || [],
     neighborhood: this.neighborhood,
-    locationName: this.locationName || this.neighborhood || '',
+    locationName: this.visibleLocationName(),
     emailVerified: Boolean(this.emailVerified),
     online: this.visibleOnline(),
   };

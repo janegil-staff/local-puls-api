@@ -8,7 +8,7 @@ export function notFound(req, res, next) {
 }
 
 // Central error handler. Must have 4 args for Express to treat it as such.
-// eslint-disable-next-line no-unused-vars
+ 
 export function errorHandler(err, req, res, _next) {
   // Mongoose duplicate key → 409.
   if (err.code === 11000) {

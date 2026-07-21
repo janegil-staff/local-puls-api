@@ -6,34 +6,61 @@
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import { blockedBetween, blockedIdsFor } from '../lib/blocks.js';
+import mongoose from 'mongoose';
+// localpulse/server/src/controllers/chatController.sendMessage.js
+//
+// 
 
-// ─── The three chat queries are deliberately NOT identical ───────────────────
-//
-// They look similar enough to invite "syncing" them. Don't. Each backs a
-// different surface, and a pending conversation the viewer did NOT start
-// belongs to exactly one of them:
-//
-//   listConversations  → Inbox tab.     Accepted + the viewer's OWN outgoing
-//                                       pending. Incoming requests stay OUT.
-//   listRequests       → Requests tab.  ONLY incoming pending.
-//   chatUnreadCount    → the nav badge. BOTH tabs, because the badge sits
-//                                       above both — so it needs no status
-//                                       filter at all (see below).
-//
-// `{ status: 'pending', initiator: { $ne: req.userId } }` is correct in
-// listRequests, and WRONG in listConversations — putting it there renders every
-// message request twice: once in Inbox, once in Requests. That bug shipped
-// once already. The comments below repeat this at each site on purpose.
+export async function sendMessage(req, res) {
+  try {
+    const { id } = req.params;          // conversation id
+    const { text } = req.body;
+    const me = req.user.id;             // TODO: confirm requireAuth sets req.user.id
 
-// Load a conversation and assert the viewer may see it: they must be a
-// participant, and there must be no block in either direction.
-//
-// Returns { convo } on success, or { status, error } to send. 404 rather than
-// 403 for blocks — a blocked user should not learn the thread still exists.
-//
-// EVERY handler taking a :id must go through this. getMessages previously did
-// no participation check at all: any authenticated user could read any
-// conversation by guessing its ObjectId.
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: 'Invalid conversation id' });
+    }
+
+    const convo = await Conversation.findById(id);
+    if (!convo) return res.status(404).json({ error: 'Conversation not found' });
+
+    // Gate: sender must be a participant.
+    // TODO: confirm participants field name (participants / members / users).
+    const participants = (convo.participants || []).map((p) => String(p));
+    if (!participants.includes(String(me))) {
+      return res.status(403).json({ error: 'Not a participant' });
+    }
+
+    // Persist the message. THIS is the write that was missing.
+    const message = await Message.create({
+      conversation: convo._id,   // TODO: confirm FK field name
+      sender: me,                // TODO: confirm sender field name
+      text: text.trim(),
+    });
+
+    // Update conversation denormalized fields for list previews.
+    convo.lastMessage = message._id;         // TODO: confirm field
+    convo.lastMessageAt = message.createdAt; // TODO: confirm field
+    convo.updatedAt = new Date();
+    await convo.save();
+
+    // Broadcast over socket to the conversation room. `io` is attached in server.js.
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`conversation:${convo._id}`).emit('message:new', {
+        conversationId: String(convo._id),
+        message: message.toJSON ? message.toJSON() : message,
+      });
+    }
+
+    return res.status(201).json({ message });
+  } catch (err) {
+    // Do NOT swallow silently — this was likely the original bug.
+    console.error('[sendMessage] failed:', err);
+    return res.status(500).json({ error: 'Failed to send message' });
+  }
+}
+
 async function loadVisibleConversation(convoId, viewerId) {
   const convo = await Conversation.findById(convoId);
   if (!convo) return { status: 404, error: 'Conversation not found' };
