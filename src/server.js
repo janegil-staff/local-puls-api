@@ -1,16 +1,19 @@
 import { config, app} from "./app.js";
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { registerChat } from './socket/chat.js';
 import mongoose from "mongoose";
-
+import {registerChatSocket} from './socket/chat.js';
+ 
 const httpServer = createServer(app);
+
+
 const io = new Server(httpServer, {
   cors: { origin: config.clientOrigins.includes('*') ? '*' : config.clientOrigins, methods: ['GET', 'POST'] },
 });
 
-registerChat(io);
+
 app.set('io', io);
+   registerChatSocket(io);
 
 async function start() {
   try {
