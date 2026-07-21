@@ -73,16 +73,16 @@ export function registerChatSocket(io) {
       //  - The recipient cannot send until they accept.
       //  - The initiator gets exactly ONE opener; further messages are blocked
       //    until acceptance. Stops pre-acceptance spam.
-      if (convo.status === 'pending') {
+if (convo.status === 'pending') {
         if (String(convo.initiator) !== socket.userId) {
-          return { error: 'Accept the request before replying' };
+          return { error: 'Accept the request before replying', code: 'PENDING_RECIPIENT' };
         }
         const alreadySent = await Message.countDocuments({
           conversation: convo._id,
           sender: socket.userId,
         });
         if (alreadySent >= 1) {
-          return { error: 'Wait for your request to be accepted before sending more.' };
+          return { error: 'Wait for your request to be accepted before sending more.', code: 'PENDING_LIMIT' };
         }
       }
 
