@@ -17,6 +17,7 @@
 import jwt from 'jsonwebtoken';
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
+import { config } from '../config/index.js';
 
 export function registerChatSocket(io) {
   // Handshake auth — token comes from client `auth: (cb) => cb({ token })`.
@@ -24,8 +25,8 @@ export function registerChatSocket(io) {
     try {
       const token = socket.handshake.auth?.token;
       if (!token) return next(new Error('No token'));
-      const payload = jwt.verify(token, process.env.JWT_SECRET);
-      socket.userId = String(payload.id || payload.sub); // TODO: confirm claim name
+      const payload = jwt.verify(token, config.jwtSecret);
+      socket.userId = String(payload.sub);
       return next();
     } catch {
       return next(new Error('Unauthorized'));
