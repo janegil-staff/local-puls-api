@@ -5,12 +5,12 @@
 // The controller saves the message, then emits it over the socket so the other
 // participant gets it live. The socket handler no longer needs to persist.
 //
-// Conversation: { participants[], status: 'pending'|'accepted', initiator,
-//                 lastMessage: String, lastMessageAt }
+// Conversation: { participants[], pairKey, status: 'pending'|'accepted',
+//                 initiator, lastMessage: String, lastMessageAt }
 // Message:      { conversation, sender, text?, imageUrl?, readBy[] } + toClient()
 //
 import mongoose from 'mongoose';
-import Conversation from '../models/Conversation.js';
+import Conversation, { buildPairKey } from '../models/Conversation.js';
 import Message from '../models/Message.js';
 
 function currentUserId(req) {
@@ -155,14 +155,10 @@ export async function listRequests(req, res) {
     return res.status(500).json({ error: 'Failed to load requests' });
   }
 }
-// localpulse/server/src/controllers/chatController.js
-// ── REPLACEMENT for openConversation (and add the import at top of file) ──
-//
-// At the TOP of chatController.js, add buildPairKey to the Conversation import:
-//   import Conversation, { buildPairKey } from '../models/Conversation.js';
-//
-// Then replace the whole openConversation function with this:
 
+// ── Open (or re-open) a conversation with a user ──────────────────────
+// Uses pairKey (sorted participant ids) so a pair can only ever resolve to one
+// conversation. On the E11000 race (two opens at once), re-fetch the winner.
 export async function openConversation(req, res) {
   try {
     const me = currentUserId(req);
@@ -189,8 +185,7 @@ export async function openConversation(req, res) {
           status: 'pending',
         });
       } catch (err) {
-        // E11000 = another request created it between our findOne and create
-        // (the race this whole change exists to close). Re-fetch the winner.
+        // E11000 = another request created it between our findOne and create.
         if (err?.code === 11000) {
           convo = await Conversation.findOne({ pairKey });
         } else {
@@ -206,6 +201,7 @@ export async function openConversation(req, res) {
     return res.status(500).json({ error: 'Failed to open conversation' });
   }
 }
+
 // ── Accept a pending request (recipient only) ─────────────────────────
 export async function acceptConversation(req, res) {
   try {
