@@ -155,8 +155,14 @@ export async function listRequests(req, res) {
     return res.status(500).json({ error: 'Failed to load requests' });
   }
 }
+// localpulse/server/src/controllers/chatController.js
+// ── REPLACEMENT for openConversation (and add the import at top of file) ──
+//
+// At the TOP of chatController.js, add buildPairKey to the Conversation import:
+//   import Conversation, { buildPairKey } from '../models/Conversation.js';
+//
+// Then replace the whole openConversation function with this:
 
-// ── Open (or re-open) a conversation with a user ──────────────────────
 export async function openConversation(req, res) {
   try {
     const me = currentUserId(req);
@@ -169,23 +175,37 @@ export async function openConversation(req, res) {
       return res.status(400).json({ error: 'Cannot message yourself' });
     }
 
-    let convo = await Conversation.findOne({
-      participants: { $all: [me, userId], $size: 2 },
-    });
+    const pairKey = buildPairKey(me, userId);
+
+    // Fast path: the conversation already exists.
+    let convo = await Conversation.findOne({ pairKey });
+
     if (!convo) {
-      convo = await Conversation.create({
-        participants: [me, userId],
-        initiator: me,
-        status: 'pending',
-      });
+      try {
+        convo = await Conversation.create({
+          participants: [me, userId],
+          pairKey,
+          initiator: me,
+          status: 'pending',
+        });
+      } catch (err) {
+        // E11000 = another request created it between our findOne and create
+        // (the race this whole change exists to close). Re-fetch the winner.
+        if (err?.code === 11000) {
+          convo = await Conversation.findOne({ pairKey });
+        } else {
+          throw err;
+        }
+      }
     }
+
+    if (!convo) return res.status(500).json({ error: 'Failed to open conversation' });
     return res.json({ conversationId: String(convo._id), status: convo.status });
   } catch (err) {
     console.error('[openConversation] failed:', err);
     return res.status(500).json({ error: 'Failed to open conversation' });
   }
 }
-
 // ── Accept a pending request (recipient only) ─────────────────────────
 export async function acceptConversation(req, res) {
   try {
