@@ -69,11 +69,23 @@ export function registerChatSocket(io) {
         return { error: 'Not a participant' };
       }
 
+      // ── TEMP DIAGNOSTIC ─────────────────────────────────────────────
+      // Remove once the PENDING_LIMIT-on-first-message bug is understood.
+      // Prints which branch of the pending gate fires and the message count.
+      console.log('[pending gate] entry', {
+        conversationId: String(convo._id),
+        status: convo.status,
+        initiator: String(convo.initiator),
+        me: socket.userId,
+        isInitiator: String(convo.initiator) === socket.userId,
+      });
+      // ────────────────────────────────────────────────────────────────
+
       // Pending gate:
       //  - The recipient cannot send until they accept.
       //  - The initiator gets exactly ONE opener; further messages are blocked
       //    until acceptance. Stops pre-acceptance spam.
-if (convo.status === 'pending') {
+      if (convo.status === 'pending') {
         if (String(convo.initiator) !== socket.userId) {
           return { error: 'Accept the request before replying', code: 'PENDING_RECIPIENT' };
         }
@@ -81,6 +93,11 @@ if (convo.status === 'pending') {
           conversation: convo._id,
           sender: socket.userId,
         });
+
+        // ── TEMP DIAGNOSTIC ──────────────────────────────────────────
+        console.log('[pending gate] initiator branch, alreadySent =', alreadySent);
+        // ─────────────────────────────────────────────────────────────
+
         if (alreadySent >= 1) {
           return { error: 'Wait for your request to be accepted before sending more.', code: 'PENDING_LIMIT' };
         }
@@ -112,7 +129,7 @@ if (convo.status === 'pending') {
       return { ok: true, message: payload };
     }
 
-    // TEXT SEND — mobile + web emit chat:send. THIS is the handler that was missing.
+    // TEXT SEND — mobile + web emit chat:send.
     socket.on('chat:send', async ({ conversationId, text } = {}, ack) => {
       try {
         if (!conversationId || !text?.trim()) {
