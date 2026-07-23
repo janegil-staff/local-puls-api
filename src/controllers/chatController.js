@@ -88,16 +88,35 @@ export async function sendMessage(req, res) {
   }
 }
 
-// ── List accepted conversations ───────────────────────────────────────
+// localpulse/server/src/controllers/chatController.js
+// REPLACE the listConversations function with this version.
+//
+// WHY: the client (messages/page.js Row) already renders a per-conversation
+// unread badge from `convo.unread`, but the server never sent that field, so
+// the badge never appeared. Here we compute unread per conversation — messages
+// in that thread not sent by me and not yet in my readBy — and include it on
+// each row. Done with one aggregate over all the user's conversation ids rather
+// than a countDocuments per row (which would be N queries).
+
 export async function listConversations(req, res) {
   try {
     const me = currentUserId(req);
     // No .lean(): we need the User document methods (toPublic) so the avatar
-    // resolves from photos[0] via the model's own serializer. avatarUrl is a
-    // DERIVED field — it does not exist on the raw document.
+    // resolves from photos[0] via the model's own serializer.
     const convos = await Conversation.find({ participants: me, status: 'accepted' })
       .sort({ lastMessageAt: -1 })
       .populate('participants');
+
+    const ids = convos.map((c) => c._id);
+
+    // One grouped count of unread messages across all these conversations,
+    // keyed by conversation id — avoids a per-row query.
+    const meId = new mongoose.Types.ObjectId(me);
+    const unreadAgg = await Message.aggregate([
+      { $match: { conversation: { $in: ids }, sender: { $ne: meId }, readBy: { $ne: meId } } },
+      { $group: { _id: '$conversation', n: { $sum: 1 } } },
+    ]);
+    const unreadByConvo = new Map(unreadAgg.map((u) => [String(u._id), u.n]));
 
     const rows = convos.map((c) => {
       const other = (c.participants || []).find((p) => String(p._id) !== me);
@@ -106,6 +125,7 @@ export async function listConversations(req, res) {
         status: c.status,
         lastMessage: c.lastMessage,
         lastMessageAt: c.lastMessageAt,
+        unread: unreadByConvo.get(String(c._id)) || 0,
         otherUser: other ? other.toPublic() : null,
         user: other ? other.toPublic() : null,
       };
