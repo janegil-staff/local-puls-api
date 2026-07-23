@@ -271,14 +271,24 @@ export async function getMessages(req, res) {
     return res.status(500).json({ error: 'Failed to load messages' });
   }
 }
+// localpulse/server/src/controllers/chatController.js
+// REPLACE the chatUnreadCount function with this version.
+//
+// WHY: the old query counted unread messages only in status:'accepted'
+// conversations. That was fine when the message-request gate blocked messages
+// in pending threads — but the gate has been removed, so people can now send
+// freely into pending conversations. Unread messages there were invisible to
+// the badge, so a message from someone whose request you haven't accepted
+// produced no unread count. Now we count unread across ALL of the user's
+// conversations. We also return requestCount, which the web AppNav reads.
 
-// ── Unread count across accepted conversations ────────────────────────
 export async function chatUnreadCount(req, res) {
   try {
     const me = currentUserId(req);
-    const convos = await Conversation.find({
-      participants: me, status: 'accepted',
-    }).select('_id');
+
+    // ALL conversations the user is in — not just accepted. A message in a
+    // still-pending thread is just as unread as one in an accepted thread.
+    const convos = await Conversation.find({ participants: me }).select('_id');
     const ids = convos.map((c) => c._id);
 
     const count = await Message.countDocuments({
@@ -286,7 +296,17 @@ export async function chatUnreadCount(req, res) {
       sender: { $ne: me },
       readBy: { $ne: me },
     });
-    return res.json({ count });
+
+    // Incoming requests awaiting this user's approval (pending, not initiated by
+    // them). Returned so the client can show a combined or split badge without a
+    // second round-trip.
+    const requestCount = await Conversation.countDocuments({
+      participants: me,
+      status: 'pending',
+      initiator: { $ne: me },
+    });
+
+    return res.json({ count, requestCount });
   } catch (err) {
     console.error('[chatUnreadCount] failed:', err);
     return res.status(500).json({ error: 'Failed to count unread' });
