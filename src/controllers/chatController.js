@@ -3,11 +3,16 @@
 // Chat controllers — SINGLE SOURCE OF TRUTH for persistence. Both web and
 // mobile send via REST (POST /chat/conversations/:id/messages -> sendMessage).
 // The controller saves the message, then emits it over the socket so the other
-// participant gets it live. The socket handler no longer needs to persist.
+// participant gets it live.
 //
 // Conversation: { participants[], pairKey, status: 'pending'|'accepted',
 //                 initiator, lastMessage: String, lastMessageAt }
 // Message:      { conversation, sender, text?, imageUrl?, readBy[] } + toClient()
+//
+// NOTE: the pending "message request" gate has been REMOVED. Both participants
+// can send freely regardless of convo.status. Conversations still carry
+// status/initiator so the Requests vs Messages tabs and the accept action keep
+// working as an informational/moderation surface, but sending is never blocked.
 //
 import mongoose from 'mongoose';
 import Conversation, { buildPairKey } from '../models/Conversation.js';
@@ -26,23 +31,6 @@ async function persistMessage({ req, conversationId, senderId, text, imageUrl })
   const participants = convo.participants.map((p) => String(p));
   if (!participants.includes(senderId)) {
     return { status: 403, error: 'Not a participant' };
-  }
-
-  // Pending gate:
-  //  - The recipient cannot send anything until they accept.
-  //  - The initiator gets exactly ONE opener; further messages are blocked
-  //    until the recipient accepts. This stops pre-acceptance spam.
-  if (convo.status === 'pending') {
-    if (String(convo.initiator) !== senderId) {
-      return { status: 403, error: 'Accept the request before replying' };
-    }
-    const alreadySent = await Message.countDocuments({
-      conversation: convo._id,
-      sender: senderId,
-    });
-    if (alreadySent >= 1) {
-      return { status: 403, error: 'Wait for your request to be accepted before sending more.' };
-    }
   }
 
   const message = await Message.create({

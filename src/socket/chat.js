@@ -1,17 +1,21 @@
 // localpulse/server/src/socket/chat.js
 //
-// Socket.IO chat handler. Event contract matches the mobile client
-// (localpulse/app/src/api/socket.js + chatStore.js):
+// Socket.IO chat handler.
 //
-//   client emits:  chat:join {conversationId}, chat:leave {conversationId},
-//                  chat:send {conversationId, text}, chat:sendImage {conversationId, imageUrl},
-//                  chat:typing {conversationId}
-//   server emits:  chat:message <Message.toClient()>, chat:notify {conversationId},
-//                  chat:typing {userId}
+// Persistence now lives in the REST controller (chatController.js). The client
+// sends messages over REST; the controller persists and broadcasts chat:message
+// to the conversation room. This socket handler is kept for:
+//   - room membership (chat:join / chat:leave) so broadcasts reach open threads
+//   - typing relay (chat:typing)
+//   - live delivery of the events the controller emits
+//
+// The socket-based send handlers (chat:send / chat:sendImage) and their pending
+// gate have been REMOVED. They were a second, divergent persistence path and
+// the source of Android message loss (emit into a disconnected socket is
+// silently dropped). If an old client still emits chat:send, it is ignored.
 //
 import jwt from 'jsonwebtoken';
 import Conversation from '../models/Conversation.js';
-import Message from '../models/Message.js';
 import { config } from '../config/index.js';
 
 export function registerChatSocket(io) {
@@ -57,104 +61,6 @@ export function registerChatSocket(io) {
 
     socket.on('chat:leave', ({ conversationId }) => {
       if (conversationId) socket.leave(`conversation:${conversationId}`);
-    });
-
-    // Shared persistence + broadcast for both text and image messages.
-    async function persistAndBroadcast({ conversationId, text, imageUrl }) {
-      const convo = await Conversation.findById(conversationId);
-      if (!convo) return { error: 'Conversation not found' };
-
-      const participants = convo.participants.map((p) => String(p));
-      if (!participants.includes(socket.userId)) {
-        return { error: 'Not a participant' };
-      }
-
-      // ── TEMP DIAGNOSTIC ─────────────────────────────────────────────
-      // Remove once the PENDING_LIMIT-on-first-message bug is understood.
-      // Prints which branch of the pending gate fires and the message count.
-      console.log('[pending gate] entry', {
-        conversationId: String(convo._id),
-        status: convo.status,
-        initiator: String(convo.initiator),
-        me: socket.userId,
-        isInitiator: String(convo.initiator) === socket.userId,
-      });
-      // ────────────────────────────────────────────────────────────────
-
-      // Pending gate:
-      //  - The recipient cannot send until they accept.
-      //  - The initiator gets exactly ONE opener; further messages are blocked
-      //    until acceptance. Stops pre-acceptance spam.
-      if (convo.status === 'pending') {
-        if (String(convo.initiator) !== socket.userId) {
-          return { error: 'Accept the request before replying', code: 'PENDING_RECIPIENT' };
-        }
-        const alreadySent = await Message.countDocuments({
-          conversation: convo._id,
-          sender: socket.userId,
-        });
-
-        // ── TEMP DIAGNOSTIC ──────────────────────────────────────────
-        console.log('[pending gate] initiator branch, alreadySent =', alreadySent);
-        // ─────────────────────────────────────────────────────────────
-
-        if (alreadySent >= 1) {
-          return { error: 'Wait for your request to be accepted before sending more.', code: 'PENDING_LIMIT' };
-        }
-      }
-
-      const message = await Message.create({
-        conversation: convo._id,
-        sender: socket.userId,
-        ...(text ? { text: text.trim() } : {}),
-        ...(imageUrl ? { imageUrl } : {}),
-        readBy: [socket.userId],
-      });
-
-      convo.lastMessage = text ? text.trim() : '📷';
-      convo.lastMessageAt = message.createdAt;
-      await convo.save();
-
-      await message.populate('sender');
-      const payload = message.toClient();
-
-      io.to(`conversation:${convo._id}`).emit('chat:message', payload);
-
-      participants
-        .filter((p) => p !== socket.userId)
-        .forEach((p) => io.to(`user:${p}`).emit('chat:notify', {
-          conversationId: String(convo._id),
-        }));
-
-      return { ok: true, message: payload };
-    }
-
-    // TEXT SEND — mobile + web emit chat:send.
-    socket.on('chat:send', async ({ conversationId, text } = {}, ack) => {
-      try {
-        if (!conversationId || !text?.trim()) {
-          return ack?.({ error: 'Missing fields' });
-        }
-        const result = await persistAndBroadcast({ conversationId, text });
-        return ack?.(result);
-      } catch (err) {
-        console.error('[socket chat:send] failed:', err);
-        return ack?.({ error: 'Server error' });
-      }
-    });
-
-    // IMAGE SEND — mobile emits after uploading, awaits ack for rejections.
-    socket.on('chat:sendImage', async ({ conversationId, imageUrl } = {}, ack) => {
-      try {
-        if (!conversationId || !imageUrl) {
-          return ack?.({ error: 'Missing fields' });
-        }
-        const result = await persistAndBroadcast({ conversationId, imageUrl });
-        return ack?.(result);
-      } catch (err) {
-        console.error('[socket chat:sendImage] failed:', err);
-        return ack?.({ error: 'Server error' });
-      }
     });
 
     // Typing relay — to the room, excluding the sender.
