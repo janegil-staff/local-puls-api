@@ -323,4 +323,19 @@ export function defaultShowFor(gender) {
   return 'everyone';
 }
 
+// localpulse/api/src/models/User.js
+
+userSchema.virtual('profileComplete').get(function () {
+    return this.missingProfileFields().length === 0;
+});
+
+userSchema.methods.missingProfileFields = function () {
+    var missing = [];
+    if (!this.location?.coordinates?.length) missing.push('location');
+    if (!this.dateOfBirth) missing.push('dateOfBirth');
+    if (!this.gender) missing.push('gender');
+    if (!this.username) missing.push('username');
+    return missing;
+};
+
 export default mongoose.model('User', userSchema);

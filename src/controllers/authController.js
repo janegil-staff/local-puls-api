@@ -214,7 +214,12 @@ export async function register(req, res) {
     sendVerificationEmail(user, user.emailVerifyToken);
 
     const token = signToken(user._id);
-    return res.status(201).json({ token, user: user.toPublic() });
+    res.json({
+      token,
+    user: user.toPublic(),
+    profileComplete: user.profileComplete,
+    missingProfileFields: user.missingProfileFields(),
+});
   } catch (err) {
     console.error('register error', err);
     return res.status(500).json({ error: 'Registration failed' });
@@ -239,7 +244,12 @@ export async function login(req, res) {
     if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
 
     const token = signToken(user._id);
-    return res.json({ token, user: user.toPublic() });
+   res.json({
+    token,
+    user: user.toPublic(),
+    profileComplete: user.profileComplete,
+    missingProfileFields: user.missingProfileFields(),
+});
   } catch (err) {
     console.error('login error', err);
     return res.status(500).json({ error: 'Login failed' });
@@ -268,9 +278,12 @@ export async function verifyEmail(req, res) {
   user.emailVerified = true;
   user.emailVerifyToken = undefined;
   user.emailVerifyExpires = undefined;
-  await user.save();
-
-  return res.send(page('Email confirmed', 'You can close this window and return to LocalPulse.'));
+  await user.save();// in login, register, and GET /api/me
+res.json({
+    user: user.toPublic(),
+    profileComplete: user.profileComplete,
+    missingProfileFields: user.missingProfileFields(),
+});
 }
 
 // Resend the verification email. Authenticated: the token in the request
