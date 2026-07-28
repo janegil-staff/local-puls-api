@@ -33,6 +33,9 @@ app.use(
 app.use(express.json({ limit: "2mb" }));
 app.use(morgan(config.isProd ? "combined" : "dev"));
 
+// localpulse/api/src/app.js
+
+app.set("etag", false);
 // Serve locally-stored uploads (dev fallback when Spaces isn't configured).
 app.use("/uploads", express.static(path.resolve(__dirname, "../uploads")));
 
