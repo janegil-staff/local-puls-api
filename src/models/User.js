@@ -358,9 +358,8 @@ userSchema.methods.missingProfileFields = function () {
 // Keeps the stored flag honest. A boolean that is only written at signup
 // goes stale the moment someone fills a gap later — derive it on every save
 // instead of trusting whoever last wrote it.
-userSchema.pre("save", function (next) {
+userSchema.pre("save", function () {
   this.profileComplete = this.missingProfileFields().length === 0;
-  next();
 });
 
 export default mongoose.model("User", userSchema);
