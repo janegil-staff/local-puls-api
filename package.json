@@ -6,14 +6,14 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "seed:posts": "node scripts/seed-comments.cjs",
-    "seed:posts:remove": "node scripts/unseed-comments.cjs",
+    "seed:comments": "node scripts/seed-comments.cjs",
+    "seed:comments:remove": "node scripts/unseed-comments.cjs",
     "seed:assets": "node scripts/uploadSeedAssets.js",
-    "seed:assets:remove": "node scripts/removeSeedAssets.js",
+    "seed:assets:remove": "node scripts/removeSeedAssets.js --confirm",
     "seed:demo": "node scripts/seedDemoData.js",
     "seed:demo:remove": "node scripts/removeDemoData.js",
     "seed:all": "npm run seed:assets && npm run seed:demo",
-    "seed:reset": "node scripts/removeSeedAssets.js --confirm && node scripts/removeDemoData.js && node scripts/uploadSeedAssets.js && node scripts/seedDemoData.js"
+    "seed:reset": "node scripts/removeSeedAssets.js --confirm && node scripts/removeDemoData.js && node scripts/uploadSeedAssets.js && node scripts/seedDemoData.js && node scripts/seed-comments"
   },
   "keywords": [],
   "author": "",
