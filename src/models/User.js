@@ -1,9 +1,10 @@
 // localpulse/server/src/models/User.js
-import mongoose from 'mongoose';
-import bcrypt from 'bcryptjs';
+import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
+import { profileCompleteness } from "./plugins/profileCompleteness";
 
-export const GENDERS = ['female', 'male', 'nonbinary', 'other'];
-export const ORIENT_SHOW = ['female', 'male', 'everyone']; // who I want to see
+export const GENDERS = ["female", "male", "nonbinary", "other"];
+export const ORIENT_SHOW = ["female", "male", "everyone"]; // who I want to see
 
 const ONLINE_MS = 2 * 60 * 1000; // "online" = active within the last 2 minutes
 
@@ -28,7 +29,7 @@ function ageFromDob(dob) {
 
 const pointSchema = new mongoose.Schema(
   {
-    type: { type: String, enum: ['Point'], required: true },
+    type: { type: String, enum: ["Point"], required: true },
     coordinates: { type: [Number], required: true }, // [lng, lat]
   },
   { _id: false },
@@ -44,28 +45,41 @@ const photoSchema = new mongoose.Schema(
 
 const userSchema = new mongoose.Schema(
   {
-    username: { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 24 },
-    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    username: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      minlength: 3,
+      maxlength: 24,
+    },
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
     passwordHash: { type: String, required: true },
     pinHash: { type: String }, // optional 4-6 digit PIN, hashed
     displayName: { type: String, trim: true, maxlength: 40 },
-    bio: { type: String, maxlength: 300, default: '' },
-    language: { type: String, default: 'en' }, // UI language: no/en/nl/fr/de/it/sv/da/fi/es/pl/pt
+    bio: { type: String, maxlength: 300, default: "" },
+    language: { type: String, default: "en" }, // UI language: no/en/nl/fr/de/it/sv/da/fi/es/pl/pt
 
-    role: { type: String, enum: ['user', 'admin'], default: 'user' },
+    role: { type: String, enum: ["user", "admin"], default: "user" },
     banned: { type: Boolean, default: false },
     pushTokens: [{ type: String }],
 
     // ── Profile ─────────────────────────────────────────
-    dob: { type: Date },                 // date of birth (age gate: 18+)
+    dob: { type: Date }, // date of birth (age gate: 18+)
     gender: { type: String, enum: GENDERS },
     // Ordered; photos[0] is the primary. Each entry is { url, publicId } —
     // see photoSchema. Legacy documents hold bare strings; normalizePhotos()
     // below converts them on read, and the migration script converts them at
     // rest.
     photos: [photoSchema],
-    interests: [{ type: String }],       // free tags, e.g. "hiking", "coffee"
-    neighborhood: { type: String, default: '' }, // local flavor
+    interests: [{ type: String }], // free tags, e.g. "hiking", "coffee"
+    neighborhood: { type: String, default: "" }, // local flavor
 
     // ── Privacy ─────────────────────────────────────────
     // What other users may see about me. Both default to true, matching the
@@ -80,7 +94,7 @@ const userSchema = new mongoose.Schema(
 
     // Discovery preferences.
     preferences: {
-      show: { type: String, enum: ORIENT_SHOW, default: 'everyone' },
+      show: { type: String, enum: ORIENT_SHOW, default: "everyone" },
       ageMin: { type: Number, default: 18, min: 18 },
       ageMax: { type: Number, default: 99 },
 
@@ -113,12 +127,12 @@ const userSchema = new mongoose.Schema(
     // as 0 km apart.
     location: { type: pointSchema, default: undefined },
 
-    locationMode: { type: String, enum: ['gps', 'manual'], default: 'gps' },
-    locationName: { type: String, default: '' }, // e.g. "Bergen sentrum"
+    locationMode: { type: String, enum: ["gps", "manual"], default: "gps" },
+    locationName: { type: String, default: "" }, // e.g. "Bergen sentrum"
 
     // Where I'm browsing. Absent until the user picks somewhere.
     browseLocation: { type: pointSchema, default: undefined },
-    browseLocationName: { type: String, default: '' },
+    browseLocationName: { type: String, default: "" },
 
     emailVerified: { type: Boolean, default: false },
     emailVerifyToken: { type: String, index: true },
@@ -134,14 +148,15 @@ const userSchema = new mongoose.Schema(
       index: true,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
+userSchema.plugin(profileCompleteness);
 // Sparse: `location` is absent until a user reports a position, and a
 // non-sparse 2dsphere index over missing paths is wasteful (and errors on
 // older MongoDB). Documents without a location simply aren't indexed, which is
 // exactly right — they can't appear in $geoNear results anyway.
-userSchema.index({ location: '2dsphere' }, { sparse: true });
+userSchema.index({ location: "2dsphere" }, { sparse: true });
 // NOTE: deliberately NO 2dsphere index on browseLocation. Nothing ever runs a
 // geo query against it — it's only read off the viewer's own document to seed
 // $geoNear. A second 2dsphere index on this collection makes $geoNear ambiguous
@@ -163,7 +178,7 @@ userSchema.methods.checkPin = function checkPin(plain) {
   return bcrypt.compare(String(plain), this.pinHash);
 };
 
-userSchema.virtual('age').get(function age() {
+userSchema.virtual("age").get(function age() {
   return ageFromDob(this.dob);
 });
 
@@ -173,7 +188,10 @@ userSchema.virtual('age').get(function age() {
 // showOnlineStatus by design — the flag governs what we tell other users, not
 // whether we know. Anything user-facing must go through visibleOnline().
 userSchema.methods.isOnline = function isOnline() {
-  return Boolean(this.lastSeenAt && Date.now() - new Date(this.lastSeenAt).getTime() < ONLINE_MS);
+  return Boolean(
+    this.lastSeenAt &&
+    Date.now() - new Date(this.lastSeenAt).getTime() < ONLINE_MS,
+  );
 };
 
 // What OTHER users may see of my presence. `?? true` because accounts created
@@ -187,17 +205,17 @@ userSchema.methods.visibleOnline = function visibleOnline() {
 // bare-string form or the new { url, publicId } form; the client should never
 // have to know which. Legacy strings come back with publicId: null.
 export function normalizePhotos(photos) {
-  return (photos || []).map((p) => (
-    typeof p === 'string'
+  return (photos || []).map((p) =>
+    typeof p === "string"
       ? { url: p, publicId: null }
-      : { url: p.url, publicId: p.publicId ?? null }
-  ));
+      : { url: p.url, publicId: p.publicId ?? null },
+  );
 }
 
 // The first photo's URL, or ''. Used for avatars.
 function primaryUrl(photos) {
   const first = normalizePhotos(photos)[0];
-  return first?.url || '';
+  return first?.url || "";
 }
 
 // Coarsen a place name to city-level. locationName is free-form and often
@@ -211,9 +229,12 @@ function primaryUrl(photos) {
 // grid (snapCoords) plus the showDistance gate; this just avoids handing out a
 // street/neighbourhood label for free.
 export function coarseLocationName(name) {
-  if (!name || typeof name !== 'string') return '';
-  const parts = name.split(',').map((s) => s.trim()).filter(Boolean);
-  if (parts.length === 0) return '';
+  if (!name || typeof name !== "string") return "";
+  const parts = name
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return "";
   // Last segment is typically the broadest (city/region). If the name has no
   // comma, fall back to the whole string — it's already a single label.
   return parts[parts.length - 1];
@@ -233,8 +254,8 @@ export function coarseLocationName(name) {
 // Prefers locationName (coarsened) and falls back to neighbourhood, which is
 // self-authored local-flavour text and not derived from GPS.
 userSchema.methods.visibleLocationName = function visibleLocationName() {
-  if ((this.showDistance ?? true) === false) return '';
-  return coarseLocationName(this.locationName) || this.neighborhood || '';
+  if ((this.showDistance ?? true) === false) return "";
+  return coarseLocationName(this.locationName) || this.neighborhood || "";
 };
 
 // Minimal public shape — never leak hash/email/dob.
@@ -262,7 +283,7 @@ userSchema.methods.toPublic = function toPublic() {
     age: ageFromDob(this.dob),
     gender: this.gender,
     bio: this.bio,
-    neighborhood: this.neighborhood || '',
+    neighborhood: this.neighborhood || "",
     interests: this.interests || [],
     memberSince: this.createdAt,
   };
@@ -298,7 +319,7 @@ userSchema.methods.toSelf = function toSelf() {
     email: this.email,
     displayName: this.displayName || this.username,
     bio: this.bio,
-    language: this.language || 'no',
+    language: this.language || "no",
     dob: this.dob,
     age: ageFromDob(this.dob),
     gender: this.gender,
@@ -309,33 +330,37 @@ userSchema.methods.toSelf = function toSelf() {
     profileComplete: this.profileComplete,
     showOnlineStatus: this.showOnlineStatus ?? true,
     showDistance: this.showDistance ?? true,
-    locationMode: this.locationMode || 'gps',
-    locationName: this.locationName || '',
-    browseLocationName: this.browseLocationName || '',
+    locationMode: this.locationMode || "gps",
+    locationName: this.locationName || "",
+    browseLocationName: this.browseLocationName || "",
     hasBrowseLocation: Boolean(this.browseLocation?.coordinates?.length),
     emailVerified: Boolean(this.emailVerified),
   };
 };
 
 export function defaultShowFor(gender) {
-  if (gender === 'female') return 'male';
-  if (gender === 'male') return 'female';
-  return 'everyone';
+  if (gender === "female") return "male";
+  if (gender === "male") return "female";
+  return "everyone";
 }
 
 // localpulse/api/src/models/User.js
 
-userSchema.virtual('profileComplete').get(function () {
-    return this.missingProfileFields().length === 0;
-});
-
 userSchema.methods.missingProfileFields = function () {
-    var missing = [];
-    if (!this.location?.coordinates?.length) missing.push('location');
-    if (!this.dateOfBirth) missing.push('dateOfBirth');
-    if (!this.gender) missing.push('gender');
-    if (!this.username) missing.push('username');
-    return missing;
+  var missing = [];
+  if (!this.location?.coordinates?.length) missing.push("location");
+  if (!this.dateOfBirth) missing.push("dateOfBirth");
+  if (!this.gender) missing.push("gender");
+  if (!this.username) missing.push("username");
+  return missing;
 };
 
-export default mongoose.model('User', userSchema);
+// Keeps the stored flag honest. A boolean that is only written at signup
+// goes stale the moment someone fills a gap later — derive it on every save
+// instead of trusting whoever last wrote it.
+userSchema.pre("save", function (next) {
+  this.profileComplete = this.missingProfileFields().length === 0;
+  next();
+});
+
+export default mongoose.model("User", userSchema);

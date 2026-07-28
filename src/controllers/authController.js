@@ -1,9 +1,9 @@
 // localpulse/server/src/controllers/authController.js
-import crypto from 'crypto';
-import User, { defaultShowFor } from '../models/User.js';
-import { signToken } from '../middleware/auth.js';
-import bcrypt from 'bcryptjs';
-import { sendVerificationEmail, sendPinResetEmail } from '../lib/mail.js';
+import crypto from "crypto";
+import User, { defaultShowFor } from "../models/User.js";
+import { signToken } from "../middleware/auth.js";
+import bcrypt from "bcryptjs";
+import { sendVerificationEmail, sendPinResetEmail } from "../lib/mail.js";
 
 const RESET_TTL_MS = 10 * 60 * 1000;
 const RESET_MAX_ATTEMPTS = 5;
@@ -13,7 +13,7 @@ const RESET_REQUEST_WINDOW_MS = 60 * 60 * 1000;
 // 4 digits, zero-padded. crypto.randomInt is uniform; Math.random is not, and
 // a biased 4-digit code is meaningfully weaker than an unbiased one.
 function newResetCode() {
-  return String(crypto.randomInt(0, 10000)).padStart(4, '0');
+  return String(crypto.randomInt(0, 10000)).padStart(4, "0");
 }
 
 // Clear every reset field. Used on success, on exhaustion, and on expiry.
@@ -25,14 +25,16 @@ function clearReset(user) {
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000;
 
 function newVerifyToken() {
-  return crypto.randomBytes(32).toString('hex');
+  return crypto.randomBytes(32).toString("hex");
 }
 // Request a reset code. ALWAYS responds 200, whether or not the email exists —
 // otherwise this endpoint is a user-enumeration oracle.
 export async function requestPinReset(req, res) {
   try {
-    const email = String(req.body.email || '').trim().toLowerCase();
-    if (!email) return res.status(400).json({ error: 'Email is required' });
+    const email = String(req.body.email || "")
+      .trim()
+      .toLowerCase();
+    if (!email) return res.status(400).json({ error: "Email is required" });
 
     const user = await User.findOne({ email });
     if (!user) return res.json({ ok: true });
@@ -58,8 +60,8 @@ export async function requestPinReset(req, res) {
     sendPinResetEmail(user, code);
     return res.json({ ok: true });
   } catch (err) {
-    console.error('requestPinReset error', err);
-    return res.status(500).json({ error: 'Could not send reset code' });
+    console.error("requestPinReset error", err);
+    return res.status(500).json({ error: "Could not send reset code" });
   }
 }
 
@@ -68,18 +70,23 @@ export async function requestPinReset(req, res) {
 // gains nothing: the client already has both values by the time it submits.
 export async function resetPin(req, res) {
   try {
-    const email = String(req.body.email || '').trim().toLowerCase();
-    const code = String(req.body.code || '').trim();
-    const pin = String(req.body.pin || '').trim();
+    const email = String(req.body.email || "")
+      .trim()
+      .toLowerCase();
+    const code = String(req.body.code || "").trim();
+    const pin = String(req.body.pin || "").trim();
 
-    if (!email || !code) return res.status(400).json({ error: 'Email and code are required' });
-    if (!/^\d{4}$/.test(pin)) return res.status(400).json({ error: 'PIN must be 4 digits' });
+    if (!email || !code)
+      return res.status(400).json({ error: "Email and code are required" });
+    if (!/^\d{4}$/.test(pin))
+      return res.status(400).json({ error: "PIN must be 4 digits" });
 
     const user = await User.findOne({ email });
 
     // Generic message on every failure path below: a distinct "no such account"
     // would leak which emails are registered.
-    const invalid = () => res.status(400).json({ error: 'Invalid or expired code' });
+    const invalid = () =>
+      res.status(400).json({ error: "Invalid or expired code" });
 
     if (!user || !user.pinResetHash || !user.pinResetExpires) return invalid();
 
@@ -114,8 +121,8 @@ export async function resetPin(req, res) {
     const token = signToken(user._id);
     return res.json({ token, user: user.toPublic() });
   } catch (err) {
-    console.error('resetPin error', err);
-    return res.status(500).json({ error: 'Could not reset PIN' });
+    console.error("resetPin error", err);
+    return res.status(500).json({ error: "Could not reset PIN" });
   }
 }
 
@@ -124,17 +131,19 @@ export async function resetPin(req, res) {
 // the owner out.
 export async function changePin(req, res) {
   try {
-    const currentPin = String(req.body.currentPin || '').trim();
-    const newPin = String(req.body.newPin || '').trim();
+    const currentPin = String(req.body.currentPin || "").trim();
+    const newPin = String(req.body.newPin || "").trim();
 
-    if (!/^\d{4}$/.test(newPin)) return res.status(400).json({ error: 'PIN must be 4 digits' });
-    if (currentPin === newPin) return res.status(400).json({ error: 'New PIN must be different' });
+    if (!/^\d{4}$/.test(newPin))
+      return res.status(400).json({ error: "PIN must be 4 digits" });
+    if (currentPin === newPin)
+      return res.status(400).json({ error: "New PIN must be different" });
 
     const user = await User.findById(req.userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user) return res.status(404).json({ error: "User not found" });
 
     const ok = await user.checkPin(currentPin);
-    if (!ok) return res.status(401).json({ error: 'Current PIN is incorrect' });
+    if (!ok) return res.status(401).json({ error: "Current PIN is incorrect" });
 
     // setPin writes BOTH pinHash and passwordHash — see the method on the
     // model. Writing only pinHash would leave checkPassword() accepting the
@@ -148,8 +157,8 @@ export async function changePin(req, res) {
 
     return res.json({ ok: true });
   } catch (err) {
-    console.error('changePin error', err);
-    return res.status(500).json({ error: 'Could not change PIN' });
+    console.error("changePin error", err);
+    return res.status(500).json({ error: "Could not change PIN" });
   }
 }
 
@@ -159,13 +168,13 @@ export async function register(req, res) {
     let { username } = req.body;
 
     if (!email) {
-      return res.status(400).json({ error: 'email is required' });
+      return res.status(400).json({ error: "email is required" });
     }
     if (!pin) {
-      return res.status(400).json({ error: 'A PIN is required' });
+      return res.status(400).json({ error: "A PIN is required" });
     }
     if (!/^\d{4}$/.test(String(pin))) {
-      return res.status(400).json({ error: 'PIN must be 4 digits' });
+      return res.status(400).json({ error: "PIN must be 4 digits" });
     }
 
     // A username may now be supplied by the signup flow; validate it. If none,
@@ -173,10 +182,16 @@ export async function register(req, res) {
     if (username != null) {
       username = String(username).trim();
       if (username.length < 3 || username.length > 24) {
-        return res.status(400).json({ error: 'Username must be 3 to 24 characters' });
+        return res
+          .status(400)
+          .json({ error: "Username must be 3 to 24 characters" });
       }
     } else {
-      let base = String(email).split('@')[0].replace(/[^a-zA-Z0-9_]/g, '').slice(0, 20) || 'user';
+      let base =
+        String(email)
+          .split("@")[0]
+          .replace(/[^a-zA-Z0-9_]/g, "")
+          .slice(0, 20) || "user";
       while (base.length < 3) base += Math.floor(Math.random() * 10);
       username = base;
       let n = 0;
@@ -186,10 +201,19 @@ export async function register(req, res) {
       }
     }
 
-    const exists = await User.findOne({ $or: [{ email: email.toLowerCase() }, { username }] });
-    if (exists) return res.status(409).json({ error: 'Username or email already in use' });
+    const exists = await User.findOne({
+      $or: [{ email: email.toLowerCase() }, { username }],
+    });
+    if (exists)
+      return res
+        .status(409)
+        .json({ error: "Username or email already in use" });
 
-    const user = new User({ username, email, displayName: displayName || username });
+    const user = new User({
+      username,
+      email,
+      displayName: displayName || username,
+    });
     if (dob) user.dob = dob;
     if (gender) {
       user.gender = gender;
@@ -216,13 +240,12 @@ export async function register(req, res) {
     const token = signToken(user._id);
     res.json({
       token,
-    user: user.toPublic(),
-    profileComplete: user.profileComplete,
-    missingProfileFields: user.missingProfileFields(),
-});
+      user: user.toPublic(),
+      ...user.profileState(), // { profileComplete, missingProfileFields }
+    });
   } catch (err) {
-    console.error('register error', err);
-    return res.status(500).json({ error: 'Registration failed' });
+    console.error("register error", err);
+    return res.status(500).json({ error: "Registration failed" });
   }
 }
 
@@ -230,36 +253,42 @@ export async function login(req, res) {
   try {
     const { emailOrUsername, password } = req.body;
     if (!emailOrUsername || !password) {
-      return res.status(400).json({ error: 'Credentials required' });
+      return res.status(400).json({ error: "Credentials required" });
     }
     const user = await User.findOne({
-      $or: [{ email: String(emailOrUsername).toLowerCase() }, { username: emailOrUsername }],
+      $or: [
+        { email: String(emailOrUsername).toLowerCase() },
+        { username: emailOrUsername },
+      ],
     });
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
     // The credential may be the password OR the PIN (app-lock login sends the
     // PIN here). Accept either.
     let ok = await user.checkPassword(password);
     if (!ok) ok = await user.checkPin(password);
-    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+    if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
     const token = signToken(user._id);
-   res.json({
-    token,
-    user: user.toPublic(),
-    profileComplete: user.profileComplete,
-    missingProfileFields: user.missingProfileFields(),
-});
+    res.json({
+      token,
+      user: user.toPublic(),
+      profileComplete: user.profileComplete,
+      missingProfileFields: user.missingProfileFields(),
+    });
   } catch (err) {
-    console.error('login error', err);
-    return res.status(500).json({ error: 'Login failed' });
+    console.error("login error", err);
+    return res.status(500).json({ error: "Login failed" });
   }
 }
 
 export async function me(req, res) {
   const user = await User.findById(req.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  return res.json({ user: user.toPublic() });
+  if (!user) return res.status(404).json({ error: "User not found" });
+  res.json({
+    user: user.toPublic(),
+    ...user.profileState(), // { profileComplete, missingProfileFields }
+  });
 }
 
 // Clicked from the email. Returns HTML, not JSON — this opens in a browser.
@@ -272,25 +301,32 @@ export async function verifyEmail(req, res) {
   });
 
   if (!user) {
-    return res.status(400).send(page('Link expired', 'This confirmation link is invalid or has expired. Request a new one from the app.'));
+    return res
+      .status(400)
+      .send(
+        page(
+          "Link expired",
+          "This confirmation link is invalid or has expired. Request a new one from the app.",
+        ),
+      );
   }
 
   user.emailVerified = true;
   user.emailVerifyToken = undefined;
   user.emailVerifyExpires = undefined;
-  await user.save();// in login, register, and GET /api/me
-res.json({
+  await user.save(); // in login, register, and GET /api/me
+  res.json({
+    token,
     user: user.toPublic(),
-    profileComplete: user.profileComplete,
-    missingProfileFields: user.missingProfileFields(),
-});
+    ...user.profileState(), // { profileComplete, missingProfileFields }
+  });
 }
 
 // Resend the verification email. Authenticated: the token in the request
 // already proves who is asking, so there's no user enumeration to worry about.
 export async function resendVerification(req, res) {
   const user = await User.findById(req.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user) return res.status(404).json({ error: "User not found" });
   if (user.emailVerified) return res.json({ ok: true, alreadyVerified: true });
 
   user.emailVerifyToken = newVerifyToken();
