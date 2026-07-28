@@ -40,14 +40,6 @@ app.get("/health", (_req, res) =>
   res.json({ status: "ok", service: "localpulse", env: config.env }),
 );
 
-// localpulse/api/src/app.js — before the route mounts
-
-app.use("/api/me", function (req, res, next) {
-  console.log("/api/me ->", res.status, res.headers.get("content-length"));
-  res.set("Cache-Control", "no-store");
-  next();
-});
-
 app.use("/api", apiLimiter, routes);
 
 // 404 + central error handler (must be last).
