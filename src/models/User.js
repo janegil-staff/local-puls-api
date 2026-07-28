@@ -1,7 +1,7 @@
 // localpulse/server/src/models/User.js
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import { profileCompleteness } from "./plugins/profileCompleteness";
+import { profileCompleteness } from "./plugins/profileCompleteness.js";
 
 export const GENDERS = ["female", "male", "nonbinary", "other"];
 export const ORIENT_SHOW = ["female", "male", "everyone"]; // who I want to see
