@@ -106,22 +106,11 @@ const userSchema = new mongoose.Schema(
     showOnlineStatus: { type: Boolean, default: true },
     showDistance: { type: Boolean, default: true },
 
-    // Discovery preferences.
     preferences: {
       show: { type: String, enum: ORIENT_SHOW, default: "everyone" },
+      showSetByUser: { type: Boolean, default: false },
       ageMin: { type: Number, default: 18, min: 18 },
       ageMax: { type: Number, default: 99 },
-
-      // null = "Anywhere", no distance cut-off. This is the DEFAULT: a new
-      // user in a sparse area would otherwise land on an empty Discover screen
-      // and churn before ever finding the setting. $geoNear still returns
-      // nearest-first, so a user in a dense area sees local people regardless.
-      //
-      // Deliberately NO `min`/`max` here. Mongoose's min validator RUNS on
-      // null (null < 1 is true) rather than skipping it, so `min: 1` would
-      // reject the very value that means "no limit" — save() throws, the
-      // request 500s, and the client's toggle springs back. Range is enforced
-      // in profileController.updatePreferences, which knows null is legal.
       maxDistanceKm: { type: Number, default: null },
     },
 
