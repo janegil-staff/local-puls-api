@@ -18,7 +18,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
-import User, { snapCoords } from "../src/models/User.js";
+import User, { snapCoords, defaultShowFor } from "../src/models/User.js";
 import Post from "../src/models/Post.js";
 import { INTERESTS, MAX_INTERESTS } from "../src/lib/interests.js";
 
@@ -602,6 +602,26 @@ async function seedUsers(passwordHash, manifest) {
       bio: p.bio,
       neighborhood: p.neighborhood,
       interests: normaliseInterests(p.interests, p.username),
+
+      // Discovery defaults derived from gender: male -> female, female ->
+      // male, anything else -> everyone. Uses the model's own defaultShowFor
+      // so seeded users match what registration produces, rather than a
+      // second copy of the rule that can drift.
+      //
+      // showSetByUser stays false: this is a default, not a choice the user
+      // made. Anything that later re-derives the default must be able to tell
+      // those apart, or it will overwrite real preferences.
+      preferences: {
+        show: defaultShowFor(p.gender),
+        showSetByUser: false,
+        ageMin: 18,
+        ageMax: 99,
+        // null = Anywhere. Seed users are scattered ~5km apart, so a radius
+        // would work — but a new tester in another city would see an empty
+        // Discover screen and conclude the app is broken.
+        maxDistanceKm: null,
+      },
+
       photos,
       profileComplete: true,
       location: { type: "Point", coordinates: snapCoords([lng, lat]) },
@@ -716,7 +736,15 @@ async function run() {
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 12);
   const users = await seedUsers(passwordHash, manifest);
   const posts = await seedPosts(users, manifest);
-
+  const shows = DEMO_PROFILES.reduce((acc, p) => {
+    const key = `${p.gender} → ${defaultShowFor(p.gender)}`;
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  console.log("");
+  console.log("Discovery defaults:");
+  for (const [k, n] of Object.entries(shows))
+    console.log(`  ${k.padEnd(22)} ${n}`);
   console.log("");
   console.log("Demo data seed completed.");
   console.log(`Users: ${users.length}`);
