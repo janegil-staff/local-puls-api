@@ -1,8 +1,8 @@
 // localpulse/server/src/controllers/userController.js
-import User, { coarseLocationName } from '../models/User.js';
-import Follow from '../models/Follow.js';
-import Post from '../models/Post.js';
-import { notify } from '../lib/notify.js';
+import User, { coarseLocationName } from "../models/User.js";
+import Follow from "../models/Follow.js";
+import Post from "../models/Post.js";
+import { notify } from "../lib/notify.js";
 
 // Great-circle distance in km between two GeoJSON [lng, lat] pairs.
 // Rounded to one decimal with a 0.1 floor, matching discoveryController's
@@ -19,14 +19,37 @@ function haversineKm([lng1, lat1], [lng2, lat2]) {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
   const km = 2 * R * Math.asin(Math.sqrt(h));
-  return km < 1 ? Math.max(0.1, Math.round(km * 10) / 10) : Math.round(km * 10) / 10;
+  return km < 1
+    ? Math.max(0.1, Math.round(km * 10) / 10)
+    : Math.round(km * 10) / 10;
 }
 
-// local-pulse-api/src/controllers/userController.js
+// Whole years, by calendar.
+//
+// NOT elapsed-milliseconds / 365.25: that drifts by a day or two depending on
+// where leap years fall, so the same person can read as 24 here and 25 in a
+// screen that computed it differently. On an app with an 18+ gate and age-range
+// matching, two answers to "how old is this person" is not acceptable.
+//
+// The model's ageFromDob still uses the division — worth aligning, but changing
+// a serializer used everywhere is a separate edit.
+function ageFrom(dob, now = new Date()) {
+  if (!dob) return null;
+  const birth = new Date(dob);
+  if (Number.isNaN(birth.getTime())) return null;
+
+  let age = now.getUTCFullYear() - birth.getUTCFullYear();
+  const monthDiff = now.getUTCMonth() - birth.getUTCMonth();
+  const dayDiff = now.getUTCDate() - birth.getUTCDate();
+  if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) age -= 1;
+
+  return age;
+}
+
 export async function getProfile(req, res) {
   try {
     const user = await User.findOne({ username: req.params.username });
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user) return res.status(404).json({ error: "User not found" });
 
     const [followers, following, viewerFollows, posts] = await Promise.all([
       Follow.countDocuments({ following: user._id }),
@@ -34,7 +57,10 @@ export async function getProfile(req, res) {
       req.userId
         ? Follow.exists({ follower: req.userId, following: user._id })
         : Promise.resolve(false),
-      Post.find({ author: user._id }).sort({ createdAt: -1 }).limit(20).populate('author'),
+      Post.find({ author: user._id })
+        .sort({ createdAt: -1 })
+        .limit(20)
+        .populate("author"),
     ]);
 
     // Distance from the viewer, measured the same way Discover measures it:
@@ -51,10 +77,13 @@ export async function getProfile(req, res) {
     // the row rather than printing "0 km".
     let distanceKm = null;
     if (req.userId && (user.showDistance ?? true)) {
-      const me = await User.findById(req.userId).select('location browseLocation');
-      const from = me?.browseLocation?.coordinates?.length === 2
-        ? me.browseLocation.coordinates
-        : me?.location?.coordinates;
+      const me = await User.findById(req.userId).select(
+        "location browseLocation",
+      );
+      const from =
+        me?.browseLocation?.coordinates?.length === 2
+          ? me.browseLocation.coordinates
+          : me?.location?.coordinates;
       const to = user.location?.coordinates;
       if (from?.length === 2 && to?.length === 2) {
         distanceKm = haversineKm(from, to);
@@ -69,15 +98,14 @@ export async function getProfile(req, res) {
     //   2. coarsen it to the broadest segment (city/region) via
     //      coarseLocationName.
     // Empty string when hidden or absent; the client drops the fact.
-    const locationName = (user.showDistance ?? true)
-      ? coarseLocationName(user.locationName)
-      : '';
+    const locationName =
+      (user.showDistance ?? true) ? coarseLocationName(user.locationName) : "";
 
     return res.json({
       profile: {
         ...user.toPublic(),
         gender: user.gender,
-        age: user.dob ? Math.floor((Date.now() - new Date(user.dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
+        age: ageFrom(user.dob),
         language: user.language,
         locationName,
         distanceKm,
@@ -88,44 +116,150 @@ export async function getProfile(req, res) {
       posts: posts.map((p) => p.toClient(req.userId)),
     });
   } catch (err) {
-    console.error('getProfile error', err);
-    return res.status(500).json({ error: 'Could not load profile' });
+    console.error("getProfile error", err);
+    return res.status(500).json({ error: "Could not load profile" });
+  }
+}
+
+// ── Follower / following lists ────────────────────────────────────────
+//
+// Both are behind requireAuth. A follower list on a proximity app is a social
+// graph tied to physical location — who this person knows, near where they
+// live — so it is not something to hand out to anyone with the URL.
+//
+// If you decide these should be private to the profile owner rather than
+// visible to any signed-in user, add:
+//
+//   if (String(req.userId) !== String(req.params.id)) return res.status(403)...
+//
+// Each row carries followedByMe so the list can render its own Follow buttons
+// without a request per row.
+async function followList(req, res, { direction }) {
+  const { before, limit } = req.query;
+  const lim = Math.min(Number(limit) || 30, 100);
+
+  // direction 'followers' -> people following :id
+  // direction 'following' -> people :id follows
+  const match =
+    direction === "followers"
+      ? { following: req.params.id }
+      : { follower: req.params.id };
+
+  // Cursor on createdAt rather than skip/limit: skip degrades on large lists
+  // and shifts rows under the user when someone follows mid-scroll.
+  const edges = await Follow.find({
+    ...match,
+    ...(before ? { createdAt: { $lt: new Date(before) } } : {}),
+  })
+    .sort({ createdAt: -1 })
+    .limit(lim)
+    .populate(direction === "followers" ? "follower" : "following");
+
+  const users = edges
+    .map((e) => (direction === "followers" ? e.follower : e.following))
+    .filter(Boolean);
+
+  // One query for the viewer's own edges rather than one per row.
+  const ids = users.map((u) => u._id);
+  const mine = req.userId
+    ? await Follow.find({
+        follower: req.userId,
+        following: { $in: ids },
+      }).select("following")
+    : [];
+  const followedByMe = new Set(mine.map((e) => String(e.following)));
+
+  return res.json({
+    users: users.map((u) => ({
+      // toPublic() is the right serializer: it already excludes email, dob and
+      // the raw location, so a follower list cannot become a way to harvest
+      // them in bulk.
+      ...u.toPublic(),
+      followedByMe: followedByMe.has(String(u._id)),
+    })),
+    // Cursor for the next page. Null when this page was not full, so the
+    // client knows to stop.
+    nextBefore:
+      edges.length === lim
+        ? edges[edges.length - 1].createdAt.toISOString()
+        : null,
+  });
+}
+
+export async function listFollowers(req, res) {
+  try {
+    return await followList(req, res, { direction: "followers" });
+  } catch (err) {
+    console.error("listFollowers error", err);
+    return res.status(500).json({ error: "Could not load followers" });
+  }
+}
+
+export async function listFollowing(req, res) {
+  try {
+    return await followList(req, res, { direction: "following" });
+  } catch (err) {
+    console.error("listFollowing error", err);
+    return res.status(500).json({ error: "Could not load following" });
   }
 }
 
 export async function follow(req, res) {
   try {
     const target = await User.findById(req.params.id);
-    if (!target) return res.status(404).json({ error: 'User not found' });
+    if (!target) return res.status(404).json({ error: "User not found" });
     if (String(target._id) === String(req.userId)) {
       return res.status(400).json({ error: "You can't follow yourself" });
     }
-    await Follow.updateOne(
+
+    // upsert + $setOnInsert makes this idempotent: a double-tap, or the app
+    // retrying after a dropped response, cannot create a second edge or send
+    // a second notification for the same follow.
+    const result = await Follow.updateOne(
       { follower: req.userId, following: target._id },
       { $setOnInsert: { follower: req.userId, following: target._id } },
-      { upsert: true }
+      { upsert: true },
     );
-    await notify({
-      userId: target._id,
-      actorId: req.userId,
-      type: 'follow',
-      title: 'New follower',
-      body: 'Someone started following you',
+
+    // Only notify on a NEW edge. Without this check, re-following someone you
+    // already follow pings them again — which is a nuisance the follower
+    // cannot see and would never intend.
+    const isNew = result.upsertedCount > 0;
+    if (isNew) {
+      await notify({
+        userId: target._id,
+        actorId: req.userId,
+        type: "follow",
+        title: "New follower",
+        body: "Someone started following you",
+      });
+    }
+
+    // Count returned so the client can reconcile its optimistic value against
+    // the truth without a second request.
+    const followerCount = await Follow.countDocuments({
+      following: target._id,
     });
-    return res.json({ following: true });
+
+    return res.json({ following: true, followerCount });
   } catch (err) {
-    console.error('follow error', err);
-    return res.status(500).json({ error: 'Could not follow' });
+    console.error("follow error", err);
+    return res.status(500).json({ error: "Could not follow" });
   }
 }
 
 export async function unfollow(req, res) {
   try {
     await Follow.deleteOne({ follower: req.userId, following: req.params.id });
-    return res.json({ following: false });
+
+    const followerCount = await Follow.countDocuments({
+      following: req.params.id,
+    });
+
+    return res.json({ following: false, followerCount });
   } catch (err) {
-    console.error('unfollow error', err);
-    return res.status(500).json({ error: 'Could not unfollow' });
+    console.error("unfollow error", err);
+    return res.status(500).json({ error: "Could not unfollow" });
   }
 }
 
@@ -135,7 +269,9 @@ export async function followingFeed(req, res) {
     const { before, limit } = req.query;
     const lim = Math.min(Number(limit) || 20, 50);
 
-    const edges = await Follow.find({ follower: req.userId }).select('following');
+    const edges = await Follow.find({ follower: req.userId }).select(
+      "following",
+    );
     const ids = edges.map((e) => e.following);
 
     const posts = await Post.find({
@@ -144,12 +280,12 @@ export async function followingFeed(req, res) {
     })
       .sort({ createdAt: -1 })
       .limit(lim)
-      .populate('author');
+      .populate("author");
 
     return res.json({ posts: posts.map((p) => p.toClient(req.userId)) });
   } catch (err) {
-    console.error('followingFeed error', err);
-    return res.status(500).json({ error: 'Could not load following feed' });
+    console.error("followingFeed error", err);
+    return res.status(500).json({ error: "Could not load following feed" });
   }
 }
 
@@ -167,9 +303,10 @@ export async function updateProfile(req, res) {
   try {
     const { displayName, bio } = req.body;
     const user = await User.findById(req.userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (!user) return res.status(404).json({ error: "User not found" });
 
-    if (displayName != null) user.displayName = String(displayName).slice(0, 40);
+    if (displayName != null)
+      user.displayName = String(displayName).slice(0, 40);
     if (bio != null) user.bio = String(bio).slice(0, 300);
 
     // validateBeforeSave: legacy documents carry invalid enum values (notably
@@ -179,7 +316,7 @@ export async function updateProfile(req, res) {
     await user.save({ validateBeforeSave: false });
     return res.json({ user: user.toPublic() });
   } catch (err) {
-    console.error('updateProfile error', err);
-    return res.status(500).json({ error: 'Could not update profile' });
+    console.error("updateProfile error", err);
+    return res.status(500).json({ error: "Could not update profile" });
   }
 }
