@@ -71,8 +71,15 @@ const userSchema = new mongoose.Schema(
     pushTokens: [{ type: String }],
 
     // ── Profile ─────────────────────────────────────────
-    dob: { type: Date }, // date of birth (age gate: 18+)
-    gender: { type: String, enum: GENDERS },
+    dob: {
+      type: Date,
+      default: () => {
+        const d = new Date();
+        d.setUTCFullYear(d.getUTCFullYear() - 25);
+        return d;
+      },
+    },
+    gender: { type: String, enum: GENDERS, default: "female" },
     // Ordered; photos[0] is the primary. Each entry is { url, publicId } —
     // see photoSchema. Legacy documents hold bare strings; normalizePhotos()
     // below converts them on read, and the migration script converts them at
