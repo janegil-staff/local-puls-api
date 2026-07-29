@@ -20,7 +20,6 @@ import { snapCoords } from "./locationController.js";
 import { destroyImages, publicIdFromUrl } from "../lib/cloudinary.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
-import Follow from "../models/Follow.js";
 
 const MIN_AGE = 18;
 const MAX_AGE = 99;
