@@ -41,35 +41,61 @@ export const createPost = asyncHandler(async (req, res) => {
 });
 
 /**
- * How far this viewer wants to see, in metres. `null` means Anywhere — no
- * distance filter at all.
+ * Where this viewer's feed is centred, and how far it reaches.
  *
- * Read from the USER, not the query string. The same preference governs the
- * people grid in discoveryController, and a client-supplied radius means the
- * two surfaces drift the first time one of them forgets to send it: "50 km"
- * in Settings would filter people but not posts, and nothing on screen would
- * explain why.
+ *   { center: [lng, lat] | null, radiusMeters: number | null }
  *
- * `radius` on the query string is still honoured for signed-out callers and
- * for anything hitting this endpoint directly, but a signed-in user's own
- * setting always wins.
+ * BOTH come from the USER document, not the query string — and that is the
+ * point. discoveryController centres the people grid on the viewer's
+ * browseLocation (or their real location), while this endpoint used to centre
+ * on whatever coordinates the DEVICE reported. Those are different places
+ * whenever someone is browsing another area, or whenever the device's fix is
+ * stale or wrong.
+ *
+ * The visible symptom: a person shows up in Discover but the post they wrote
+ * does not appear in the feed, with the same distance setting on both. Same
+ * radius, different origin.
+ *
+ * The query string is still honoured for signed-out callers, who have no
+ * stored location to centre on.
  */
-async function viewerRadiusMeters(req) {
+async function viewerGeo(req) {
+  const { lng, lat, radius } = req.query;
+
   if (!req.userId) {
-    return Number(req.query.radius) || DEFAULT_RADIUS_M;
+    return {
+      center: lng != null && lat != null ? [Number(lng), Number(lat)] : null,
+      radiusMeters: Number(radius) || DEFAULT_RADIUS_M,
+    };
   }
 
   const me = await User.findById(req.userId).select(
-    "preferences.maxDistanceKm",
+    "location browseLocation preferences.maxDistanceKm",
   );
+
+  // Browse location wins when set — the same precedence discoveryController
+  // uses. Someone browsing Oslo should see Oslo posts, not posts near the
+  // phone in their pocket.
+  const stored =
+    me?.browseLocation?.coordinates?.length === 2
+      ? me.browseLocation.coordinates
+      : me?.location?.coordinates?.length === 2
+        ? me.location.coordinates
+        : null;
+
+  // Fall back to the device's coordinates only when the account has no stored
+  // location at all — a brand-new user mid-onboarding.
+  const center =
+    stored || (lng != null && lat != null ? [Number(lng), Number(lat)] : null);
+
   const km = me?.preferences?.maxDistanceKm;
 
   // null (Anywhere) and undefined (account predates the field) both mean no
-  // limit — matching what the schema default and discoveryController do. Any
-  // other reading here would silently disagree with the people grid.
-  if (km == null) return null;
+  // limit — matching the schema default and discoveryController. Any other
+  // reading here would silently disagree with the people grid.
+  const radiusMeters = km == null ? null : Number(km) * 1000;
 
-  return Number(km) * 1000;
+  return { center, radiusMeters };
 }
 
 // Feed: always newest-first.
@@ -82,7 +108,7 @@ async function viewerRadiusMeters(req) {
 // When the viewer has chosen Anywhere, no geo filter is applied at all, even if
 // the client sent coordinates. Anywhere means everything.
 export const getFeed = asyncHandler(async (req, res) => {
-  const { lng, lat, before, limit } = req.query;
+  const { before, limit } = req.query;
   const lim = Math.min(Number(limit) || 20, 50);
 
   // Exclude people I blocked + people who blocked me.
@@ -101,21 +127,17 @@ export const getFeed = asyncHandler(async (req, res) => {
     ...(before ? { createdAt: { $lt: new Date(before) } } : {}),
   };
 
-  const radiusMeters = await viewerRadiusMeters(req);
-  const hasCoords = lng != null && lat != null;
+  const { center, radiusMeters } = await viewerGeo(req);
 
   let query = base;
-  if (hasCoords && radiusMeters != null) {
+  if (center && radiusMeters != null) {
     query = {
       ...base,
       $or: [
         {
           location: {
             $geoWithin: {
-              $centerSphere: [
-                [Number(lng), Number(lat)],
-                radiusMeters / EARTH_RADIUS_M,
-              ],
+              $centerSphere: [center, radiusMeters / EARTH_RADIUS_M],
             },
           },
         },
