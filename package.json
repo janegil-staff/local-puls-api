@@ -12,8 +12,8 @@
     "seed:assets:remove": "node scripts/removeSeedAssets.js --confirm",
     "seed:demo": "node scripts/seedDemoData.js",
     "seed:demo:remove": "node scripts/removeDemoData.js",
-    "seed:down": "node scripts/removeSeedAssets.js --confirm  && node scripts/unseed-comments.cjs && node scripts/removeDemoData.js",
-    "seed:up": "node scripts/uploadSeedAssets.js && node scripts/seedDemoData.js && node scripts/seed-comments.cjs",
+    "seed:down": "node scripts/removeSeedAssets.js --confirm && node scripts/unseed-comments.js && node scripts/removeDemoData.js",
+    "seed:up": "node scripts/uploadSeedAssets.js && node scripts/seedDemoData.js && node scripts/seed-comments.js",
     "seed:all": "npm run seed:assets && npm run seed:demo",
     "seed:reset": "npm run seed:down && npm run seed:up"
   },

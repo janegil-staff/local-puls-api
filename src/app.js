@@ -16,6 +16,25 @@ import { errorHandler, notFound } from "./middleware/errorHandler.js";
 
 const app = express();
 
+const ALLOWED_ORIGINS = (process.env.CORS_ORIGINS || "http://localhost:3000")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // No origin = curl, Postman, mobile app. Allow those through.
+      if (!origin || ALLOWED_ORIGINS.includes(origin))
+        return callback(null, true);
+      return callback(new Error(`Origin not allowed by CORS: ${origin}`));
+    },
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  }),
+);
+
 // ---------------------------------------------------------------------------
 // Caching
 // ---------------------------------------------------------------------------
@@ -40,13 +59,6 @@ app.set("etag", false);
 app.set("trust proxy", 1);
 
 app.use(helmet());
-
-app.use(
-  cors({
-    origin: config.clientOrigins,
-    credentials: true,
-  }),
-);
 
 if (!config.isProd) {
   app.use(morgan("dev"));

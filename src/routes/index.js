@@ -15,6 +15,7 @@ import chatRoutes from "./chat.routes.js";
 import notificationRoutes, { pushRouter } from "./notification.routes.js";
 import adminRoutes from "./admin.routes.js";
 import miscRoutes from "./misc.routes.js";
+import seedRoutes from "./seed.routes.js";
 
 const router = Router();
 
@@ -32,6 +33,9 @@ router.use("/notifications", notificationRoutes);
 router.use("/push", pushRouter);
 router.use("/admin", adminRoutes);
 
+if (process.env.ALLOW_SEEDING === "true") {
+  router.use("/admin/seed", seedRoutes);
+}
 // Mounted at "/" — anything below these is only reachable if neither of them
 // matches first. Keep them at the bottom, and keep their routes explicitly
 // named: the day one of them gains a "/:id" route, every mount above it that

@@ -25,8 +25,17 @@ export function attachSockets(httpServer) {
   const io = new Server(httpServer, {
     path: process.env.SOCKET_PATH || "/socket.io",
 
+    // localpulse/server/src/socket/index.js
+
     cors: {
-      origin: config.clientOrigins,
+      origin: (
+        process.env.CORS_ORIGINS ||
+        "https://quppulse.com, https://lionfish-app-ed6lo.ondigitalocean.app"
+      )
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+      methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
       credentials: true,
     },
 
