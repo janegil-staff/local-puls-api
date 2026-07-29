@@ -20,6 +20,7 @@ import { snapCoords } from "./locationController.js";
 import { destroyImages, publicIdFromUrl } from "../lib/cloudinary.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { ApiError } from "../utils/ApiError.js";
+import Follow from "../models/Follow.js";
 
 const MIN_AGE = 18;
 const MAX_AGE = 99;
@@ -71,7 +72,13 @@ function coercePhotos(photos) {
 export const getMe = asyncHandler(async (req, res) => {
   const user = await User.findById(req.userId);
   if (!user) throw ApiError.notFound("User not found");
-  res.json({ profile: user.toSelf() });
+
+  const [followerCount, followingCount] = await Promise.all([
+    Follow.countDocuments({ following: user._id }),
+    Follow.countDocuments({ follower: user._id }),
+  ]);
+
+  res.json({ profile: { ...user.toSelf(), followerCount, followingCount } });
 });
 
 // Update dating profile. Enforces the 18+ age gate on DOB.
