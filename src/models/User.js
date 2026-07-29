@@ -2,6 +2,7 @@
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import { profileCompleteness } from "./plugins/profileCompleteness.js";
+import { INTERESTS, MAX_INTERESTS } from "../lib/interests.js";
 
 export const GENDERS = ["female", "male", "nonbinary", "other"];
 export const ORIENT_SHOW = ["female", "male", "everyone"]; // who I want to see
@@ -85,7 +86,13 @@ const userSchema = new mongoose.Schema(
     // below converts them on read, and the migration script converts them at
     // rest.
     photos: [photoSchema],
-    interests: [{ type: String }], // free tags, e.g. "hiking", "coffee"
+    interests: {
+      type: [{ type: String, enum: INTERESTS }],
+      validate: {
+        validator: (v) => v.length <= MAX_INTERESTS,
+        message: `At most ${MAX_INTERESTS} interests.`,
+      },
+    },
     neighborhood: { type: String, default: "" }, // local flavor
 
     // ── Privacy ─────────────────────────────────────────
