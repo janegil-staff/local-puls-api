@@ -1,19 +1,24 @@
-// localpulse/api/src/socket/index.js
+// localpulse/server/src/socket/index.js
 //
-// Socket.IO setup: authentication, rooms, and chat handlers.
+// Socket.IO setup: authentication, rooms, and live relays.
 //
-// Sockets are an OPTIMISATION here, not the transport of record. Every
-// action below must also exist as a REST endpoint, because mobile sockets
-// drop constantly — Android suspends them on background, iOS kills them on
-// network change, and a user walking from wifi to cellular loses the
-// connection mid-sentence. If a message can only be sent over a socket,
-// it will sometimes not be sent at all.
+// THE ONLY SOCKET FILE. socket/chat.js was a second registration with its own
+// io.use() and connection handler — two auth middlewares, two joins, two
+// disconnect logs, and one of them reading the wrong JWT claim. Delete it.
+//
+// Sockets are an OPTIMISATION here, not the transport of record. Persistence
+// lives in chatController.js: the client sends over REST, the controller
+// persists and then broadcasts. There is deliberately no chat:send handler —
+// it was a second, divergent write path, and emit() into a disconnected socket
+// is silently dropped, which is how Android lost messages.
 
 import jwt from "jsonwebtoken";
 import { Server } from "socket.io";
+import Conversation from "../models/Conversation.js";
+import { config } from "../config/index.js";
 
-// A user may have several devices connected at once, so messages are
-// emitted to a per-user room rather than to a single socket id.
+// A user may have several devices connected at once, so events are emitted to
+// a per-user room rather than to a single socket id.
 const userRoom = (userId) => `user:${userId}`;
 
 export function attachSockets(httpServer) {
@@ -21,31 +26,30 @@ export function attachSockets(httpServer) {
     path: process.env.SOCKET_PATH || "/socket.io",
 
     cors: {
-      origin: (process.env.CLIENT_ORIGINS || "").split(",").filter(Boolean),
+      origin: config.clientOrigins,
       credentials: true,
     },
 
-    // Mobile keepalive. The defaults (25s interval, 20s timeout) are tuned
-    // for desktop browsers and are too aggressive for phones: a backgrounded
-    // app misses one heartbeat and gets dropped, which is the "ping timeout"
-    // in the logs. Longer windows mean a briefly backgrounded app survives.
+    // Mobile keepalive. The defaults (25s interval, 20s timeout) are tuned for
+    // desktop browsers and are too aggressive for phones: a backgrounded app
+    // misses one heartbeat and gets dropped — the "ping timeout" in the logs.
     //
-    // The ceiling is your proxy's idle timeout — pingInterval must stay
+    // The ceiling is the proxy's idle timeout; pingInterval must stay
     // comfortably below it or the proxy closes a connection the app still
     // believes is alive.
     pingInterval: 25_000,
     pingTimeout: 60_000,
 
-    // Lets a client that reconnects within this window resume its session
-    // and receive the packets it missed, instead of starting cold and
-    // silently losing messages that arrived while it was backgrounded.
+    // Lets a client reconnecting within this window resume and receive the
+    // packets it missed, instead of starting cold and silently losing whatever
+    // arrived while it was backgrounded.
     connectionStateRecovery: {
       maxDisconnectionDuration: 2 * 60 * 1000,
       skipMiddlewares: false,
     },
 
-    // Allow the polling fallback. Some corporate and mobile networks block
-    // WebSocket upgrades outright, and polling is slower but works.
+    // Polling fallback: some mobile and corporate networks block WebSocket
+    // upgrades outright.
     transports: ["websocket", "polling"],
 
     maxHttpBufferSize: 1e6,
@@ -55,14 +59,21 @@ export function attachSockets(httpServer) {
   // Authentication
   // -------------------------------------------------------------------
   //
-  // The client must pass the token as a FUNCTION, not a static object:
+  // signToken() in middleware/auth.js puts the id in the standard `sub`
+  // claim. Reading only payload.userId or payload.id yields undefined — the
+  // socket then joins `user:undefined`, looks perfectly connected, and never
+  // receives anything addressed to that user. That single line broke the
+  // unread badge, the message-request badge, chat:accepted and follow
+  // notifications simultaneously, with no error anywhere.
   //
+  // Hence the explicit guard: a socket with no resolvable user is rejected
+  // rather than allowed to sit in a room nobody can reach.
+  //
+  // Client note: pass the token as a FUNCTION, not a static object —
   //   io(url, { auth: (cb) => cb({ token: getToken() }) })
-  //
-  // With a static { token }, the value is captured once at connect time and
-  // reused on every reconnect — so after a token refresh the socket keeps
-  // presenting the old one and reconnects fail silently while REST keeps
-  // working. That mismatch is miserable to debug from the client side.
+  // A static { token } is captured once at connect time and reused on every
+  // reconnect, so after a token refresh the socket keeps presenting the old
+  // one and reconnects fail while REST carries on working.
   io.use((socket, next) => {
     const token =
       socket.handshake.auth?.token ||
@@ -71,19 +82,27 @@ export function attachSockets(httpServer) {
     if (!token) return next(new Error("unauthorized"));
 
     try {
-      const payload = jwt.verify(token, process.env.JWT_SECRET);
-      socket.data.userId = String(payload.userId || payload.id);
-      socket.data.role = payload.role;
-      next();
-    } catch {
+      const payload = jwt.verify(token, config.jwtSecret);
+      const userId = payload.sub || payload.id || payload.userId;
+
+      if (!userId) {
+        console.error("[socket auth] token has no user id claim");
+        return next(new Error("unauthorized"));
+      }
+
+      socket.userId = String(userId);
+      socket.data.userId = socket.userId; // both, so either style reads it
+      return next();
+    } catch (err) {
       // Distinct message so the client can tell "log in again" apart from
       // "network is down" and avoid an infinite reconnect loop.
-      next(new Error("unauthorized"));
+      console.error("[socket auth] failed:", err.message);
+      return next(new Error("unauthorized"));
     }
   });
 
   io.on("connection", (socket) => {
-    const { userId } = socket.data;
+    const userId = socket.userId;
 
     socket.join(userRoom(userId));
 
@@ -93,97 +112,78 @@ export function attachSockets(httpServer) {
     );
 
     // ---------------------------------------------------------------
-    // Conversations
-    // ---------------------------------------------------------------
-
-    // Joining a conversation room is presence only — it must never be the
-    // authority on who may read it. Membership is checked server-side on
-    // every send, because a client can emit any conversation id it likes.
-    socket.on("conversation:join", (conversationId) => {
-      if (typeof conversationId !== "string") return;
-      socket.join(`conversation:${conversationId}`);
-    });
-
-    socket.on("conversation:leave", (conversationId) => {
-      if (typeof conversationId !== "string") return;
-      socket.leave(`conversation:${conversationId}`);
-    });
-
-    // ---------------------------------------------------------------
-    // Chat
+    // Conversation rooms
     // ---------------------------------------------------------------
     //
-    // The handler is deliberately thin: it validates, delegates to the same
-    // service the REST endpoint uses, and acknowledges. Duplicating send
-    // logic between socket and REST is how the two drift apart and start
-    // disagreeing about what was delivered.
-    socket.on("chat:send", async (payload, ack) => {
+    // Membership is verified against the database. Joining is presence only
+    // and must never be the authority on who may read a thread — a client can
+    // emit any conversation id it likes — but an unverified join would let
+    // someone receive every message and typing event in a thread they are not
+    // part of.
+    async function joinConversation(conversationId, ack) {
       try {
-        const { conversationId, body, clientId } = payload || {};
+        if (!conversationId) return ack?.({ error: "Missing conversation ID" });
 
-        if (typeof conversationId !== "string" || !String(body || "").trim()) {
-          return ack?.({ ok: false, error: "invalid_payload" });
+        const convo = await Conversation.findOne({
+          _id: conversationId,
+          participants: userId,
+        }).select("_id");
+
+        if (!convo) {
+          return ack?.({ error: "Conversation not found or access denied" });
         }
 
-        // TODO: wire to the shared service, e.g.
-        //   const message = await sendMessage({
-        //     senderId: userId, conversationId, body, clientId,
-        //   });
-        // It must verify the sender is a participant and enforce the
-        // pending-request limit before writing.
-        const message = null;
-
-        if (!message) return ack?.({ ok: false, error: "not_implemented" });
-
-        io.to(`conversation:${conversationId}`).emit("chat:message", message);
-
-        for (const participantId of message.participantIds || []) {
-          if (String(participantId) === userId) continue;
-          io.to(userRoom(participantId)).emit("chat:notify", {
-            conversationId,
-            messageId: message._id,
-          });
-        }
-
-        // clientId is echoed back so the app can match this against its
-        // optimistic local message and de-duplicate. Without it, a message
-        // sent over the socket and then retried over REST appears twice.
-        ack?.({ ok: true, message, clientId });
-      } catch (error) {
-        console.error("[socket] chat:send failed", error);
-        ack?.({ ok: false, error: "server_error" });
+        await socket.join(`conversation:${conversationId}`);
+        return ack?.({ ok: true });
+      } catch (err) {
+        console.error("[socket join] failed:", err);
+        return ack?.({ error: "Server error" });
       }
-    });
+    }
 
-    socket.on("chat:read", async ({ conversationId } = {}, ack) => {
-      try {
-        if (typeof conversationId !== "string") {
-          return ack?.({ ok: false, error: "invalid_payload" });
-        }
+    function leaveConversation(conversationId) {
+      if (conversationId) socket.leave(`conversation:${conversationId}`);
+    }
 
-        // TODO: mark read via the shared service, then broadcast so the
-        // sender's unread badge clears on their other devices too.
-        socket.to(`conversation:${conversationId}`).emit("chat:read", {
-          conversationId,
-          userId,
-        });
+    // Two event names for the same thing: the app emits chat:join, and
+    // conversation:join exists for anything written against the other
+    // convention. Keeping both costs nothing and avoids a silent no-op if a
+    // client uses the name this file does not implement.
+    socket.on("chat:join", ({ conversationId } = {}, ack) =>
+      joinConversation(conversationId, ack),
+    );
+    socket.on("conversation:join", (arg, ack) =>
+      joinConversation(
+        typeof arg === "string" ? arg : arg?.conversationId,
+        ack,
+      ),
+    );
 
-        ack?.({ ok: true });
-      } catch (error) {
-        console.error("[socket] chat:read failed", error);
-        ack?.({ ok: false, error: "server_error" });
-      }
-    });
+    socket.on("chat:leave", ({ conversationId } = {}) =>
+      leaveConversation(conversationId),
+    );
+    socket.on("conversation:leave", (arg) =>
+      leaveConversation(typeof arg === "string" ? arg : arg?.conversationId),
+    );
 
-    // Fire-and-forget. Never persisted, never acknowledged — it is worthless
-    // a second later, and an ack would double the traffic for no benefit.
+    // ---------------------------------------------------------------
+    // Typing
+    // ---------------------------------------------------------------
+    //
+    // Fire-and-forget: never persisted, never acknowledged. It is worthless a
+    // second later and an ack would double the traffic for nothing.
+    //
+    // `typing` defaults to TRUE when absent. The app's emitTyping() sends only
+    // { conversationId }, so reading `!!typing` from that payload gives false
+    // and relays "stopped typing" on every keystroke — the indicator never
+    // appears. Receivers should expire it on a timer regardless, since the
+    // stop event is lost whenever a socket drops mid-sentence.
     socket.on("chat:typing", ({ conversationId, typing } = {}) => {
-      if (typeof conversationId !== "string") return;
-      console.log("[socket] typing", userId, conversationId, typing);
+      if (!conversationId) return;
       socket.to(`conversation:${conversationId}`).emit("chat:typing", {
         conversationId,
         userId,
-        typing: !!typing,
+        typing: typing === undefined ? true : Boolean(typing),
       });
     });
 
@@ -195,8 +195,8 @@ export function attachSockets(httpServer) {
   return io;
 }
 
-// Lets REST controllers push to sockets after a write, so a message sent
-// over REST still arrives instantly for anyone who is connected.
+// Lets REST controllers push to sockets after a write, so a message sent over
+// REST still arrives instantly for anyone currently connected.
 //
 //   import { emitToUser } from '../socket/index.js';
 //   emitToUser(req.app.get('io'), recipientId, 'chat:notify', payload);
