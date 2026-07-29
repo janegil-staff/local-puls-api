@@ -175,10 +175,11 @@ export function attachSockets(httpServer) {
       }
     });
 
-    // Typing indicators are fire-and-forget. Never persist them and never
-    // acknowledge them — they are worthless a second later.
+    // Fire-and-forget. Never persisted, never acknowledged — it is worthless
+    // a second later, and an ack would double the traffic for no benefit.
     socket.on("chat:typing", ({ conversationId, typing } = {}) => {
       if (typeof conversationId !== "string") return;
+      console.log("[socket] typing", userId, conversationId, typing);
       socket.to(`conversation:${conversationId}`).emit("chat:typing", {
         conversationId,
         userId,

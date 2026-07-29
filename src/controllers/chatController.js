@@ -9,14 +9,18 @@
 //                 initiator, lastMessage: String, lastMessageAt }
 // Message:      { conversation, sender, text?, imageUrl?, readBy[] } + toClient()
 //
-// NOTE: the pending "message request" gate has been REMOVED. Both participants
-// can send freely regardless of convo.status. Conversations still carry
-// status/initiator so the Requests vs Messages tabs and the accept action keep
-// working as an informational/moderation surface, but sending is never blocked.
+// MESSAGE REQUESTS: a stranger gets ONE message before the recipient has
+// accepted. Enforced in persistMessage via lib/pendingGuard.js, so both the
+// REST path and any future socket path go through the same check.
 //
-import mongoose from 'mongoose';
-import Conversation, { buildPairKey } from '../models/Conversation.js';
-import Message from '../models/Message.js';
+// This gate was removed at one point and the logs showed the consequence
+// immediately: two consecutive sends into a pending thread, both 201. Without
+// it, "message requests" is a label on a screen rather than a protection.
+
+import mongoose from "mongoose";
+import Conversation, { buildPairKey } from "../models/Conversation.js";
+import Message from "../models/Message.js";
+import { checkPendingRules } from "../lib/pendingGuard.js";
 
 function currentUserId(req) {
   return String(req.user.id || req.user.sub);
@@ -24,14 +28,54 @@ function currentUserId(req) {
 
 // Shared: persist a message + broadcast. Used by REST sendMessage.
 // Returns { ok, message } or { status, error } for the caller to respond with.
-async function persistMessage({ req, conversationId, senderId, text, imageUrl }) {
+//
+// `error` is a TRANSLATION KEY for the request-gate rejections
+// (chatPendingLimit), not a sentence — the app looks it up in its locale
+// files. The other errors here are plain strings because they indicate bugs
+// rather than states a user can act on.
+async function persistMessage({
+  req,
+  conversationId,
+  senderId,
+  text,
+  imageUrl,
+}) {
   const convo = await Conversation.findById(conversationId);
-  if (!convo) return { status: 404, error: 'Conversation not found' };
+  if (!convo) return { status: 404, error: "Conversation not found" };
 
   const participants = convo.participants.map((p) => String(p));
   if (!participants.includes(senderId)) {
-    return { status: 403, error: 'Not a participant' };
+    return { status: 403, error: "Not a participant" };
   }
+
+  const isRecipient =
+    convo.status === "pending" && String(convo.initiator) !== senderId;
+
+  // A recipient replying to a request IS acceptance. Requiring them to tap
+  // Accept and then type is a pointless extra step — they have plainly
+  // decided they want to talk. The Accept button still exists for accepting
+  // without replying.
+  //
+  // Flip BEFORE the guard runs, so checkPendingRules sees an accepted
+  // conversation and lets the reply through. Removing this without also
+  // handling the recipient in the guard leaves the thread deadlocked: the
+  // initiator is out of messages and the recipient never accepted.
+  if (isRecipient) {
+    convo.status = "accepted";
+    await convo.save();
+
+    const io = req.app.get("io");
+    if (io) {
+      participants.forEach((p) =>
+        io
+          .to(`user:${p}`)
+          .emit("chat:accepted", { conversationId: String(convo._id) }),
+      );
+    }
+  }
+
+  const blocked = await checkPendingRules({ convo, senderId, Message });
+  if (blocked) return { status: blocked.status, error: blocked.error };
 
   const message = await Message.create({
     conversation: convo._id,
@@ -41,22 +85,24 @@ async function persistMessage({ req, conversationId, senderId, text, imageUrl })
     readBy: [senderId],
   });
 
-  convo.lastMessage = text ? text.trim() : '📷';
+  convo.lastMessage = text ? text.trim() : "📷";
   convo.lastMessageAt = message.createdAt;
   await convo.save();
 
-  await message.populate('sender');
+  await message.populate("sender");
   const payload = message.toClient();
 
   // Broadcast live to anyone in the conversation room + notify the other side.
-  const io = req.app.get('io');
+  const io = req.app.get("io");
   if (io) {
-    io.to(`conversation:${convo._id}`).emit('chat:message', payload);
+    io.to(`conversation:${convo._id}`).emit("chat:message", payload);
     participants
       .filter((p) => p !== senderId)
-      .forEach((p) => io.to(`user:${p}`).emit('chat:notify', {
-        conversationId: String(convo._id),
-      }));
+      .forEach((p) =>
+        io.to(`user:${p}`).emit("chat:notify", {
+          conversationId: String(convo._id),
+        }),
+      );
   }
 
   return { ok: true, message: payload };
@@ -70,51 +116,64 @@ export async function sendMessage(req, res) {
     const { text, imageUrl } = req.body;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ error: 'Invalid conversation id' });
+      return res.status(400).json({ error: "Invalid conversation id" });
     }
     if (!text?.trim() && !imageUrl) {
-      return res.status(400).json({ error: 'Message is empty' });
+      return res.status(400).json({ error: "Message is empty" });
     }
 
     const result = await persistMessage({
-      req, conversationId: id, senderId: me, text, imageUrl,
+      req,
+      conversationId: id,
+      senderId: me,
+      text,
+      imageUrl,
     });
-    if (result.error) return res.status(result.status).json({ error: result.error });
+    if (result.error)
+      return res.status(result.status).json({ error: result.error });
 
     return res.status(201).json({ message: result.message });
   } catch (err) {
-    console.error('[sendMessage] failed:', err);
-    return res.status(500).json({ error: 'Failed to send message' });
+    console.error("[sendMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to send message" });
   }
 }
 
-// localpulse/server/src/controllers/chatController.js
-// REPLACE the listConversations function with this version.
+// ── Accepted conversations, with a per-conversation unread count ──────
 //
-// WHY: the client (messages/page.js Row) already renders a per-conversation
-// unread badge from `convo.unread`, but the server never sent that field, so
-// the badge never appeared. Here we compute unread per conversation — messages
-// in that thread not sent by me and not yet in my readBy — and include it on
-// each row. Done with one aggregate over all the user's conversation ids rather
-// than a countDocuments per row (which would be N queries).
-
+// The client's Row renders `convo.unread`, so it has to be supplied here.
+// Computed with ONE aggregate over all the user's conversation ids rather
+// than a countDocuments per row, which would be N queries for a list.
 export async function listConversations(req, res) {
   try {
     const me = currentUserId(req);
+
     // No .lean(): we need the User document methods (toPublic) so the avatar
     // resolves from photos[0] via the model's own serializer.
-    const convos = await Conversation.find({ participants: me, status: 'accepted' })
+    const convos = await Conversation.find({
+      participants: me,
+      status: "accepted",
+    })
       .sort({ lastMessageAt: -1 })
-      .populate('participants');
+      .populate("participants");
 
     const ids = convos.map((c) => c._id);
 
-    // One grouped count of unread messages across all these conversations,
-    // keyed by conversation id — avoids a per-row query.
+    // Cast explicitly: aggregate does NOT run values through the schema, so a
+    // raw string here silently matches nothing and every count comes back
+    // zero. countDocuments elsewhere in this file gets away with a string
+    // because Mongoose casts it — aggregate does not.
     const meId = new mongoose.Types.ObjectId(me);
+
     const unreadAgg = await Message.aggregate([
-      { $match: { conversation: { $in: ids }, sender: { $ne: meId }, readBy: { $ne: meId } } },
-      { $group: { _id: '$conversation', n: { $sum: 1 } } },
+      {
+        $match: {
+          conversation: { $in: ids },
+          sender: { $ne: meId },
+          readBy: { $ne: meId },
+        },
+      },
+      { $group: { _id: "$conversation", n: { $sum: 1 } } },
     ]);
     const unreadByConvo = new Map(unreadAgg.map((u) => [String(u._id), u.n]));
 
@@ -130,10 +189,11 @@ export async function listConversations(req, res) {
         user: other ? other.toPublic() : null,
       };
     });
+
     return res.json({ conversations: rows });
   } catch (err) {
-    console.error('[listConversations] failed:', err);
-    return res.status(500).json({ error: 'Failed to load conversations' });
+    console.error("[listConversations] failed:", err);
+    return res.status(500).json({ error: "Failed to load conversations" });
   }
 }
 
@@ -142,10 +202,12 @@ export async function listRequests(req, res) {
   try {
     const me = currentUserId(req);
     const convos = await Conversation.find({
-      participants: me, status: 'pending', initiator: { $ne: me },
+      participants: me,
+      status: "pending",
+      initiator: { $ne: me },
     })
       .sort({ lastMessageAt: -1 })
-      .populate('participants');
+      .populate("participants");
 
     const rows = convos.map((c) => {
       const other = (c.participants || []).find((p) => String(p._id) !== me);
@@ -157,10 +219,11 @@ export async function listRequests(req, res) {
         user: other ? other.toPublic() : null,
       };
     });
+
     return res.json({ requests: rows });
   } catch (err) {
-    console.error('[listRequests] failed:', err);
-    return res.status(500).json({ error: 'Failed to load requests' });
+    console.error("[listRequests] failed:", err);
+    return res.status(500).json({ error: "Failed to load requests" });
   }
 }
 
@@ -173,10 +236,10 @@ export async function openConversation(req, res) {
     const { userId } = req.params;
 
     if (!mongoose.isValidObjectId(userId)) {
-      return res.status(400).json({ error: 'Invalid user id' });
+      return res.status(400).json({ error: "Invalid user id" });
     }
     if (String(userId) === me) {
-      return res.status(400).json({ error: 'Cannot message yourself' });
+      return res.status(400).json({ error: "Cannot message yourself" });
     }
 
     const pairKey = buildPairKey(me, userId);
@@ -190,7 +253,7 @@ export async function openConversation(req, res) {
           participants: [me, userId],
           pairKey,
           initiator: me,
-          status: 'pending',
+          status: "pending",
         });
       } catch (err) {
         // E11000 = another request created it between our findOne and create.
@@ -202,50 +265,67 @@ export async function openConversation(req, res) {
       }
     }
 
-    if (!convo) return res.status(500).json({ error: 'Failed to open conversation' });
-    return res.json({ conversationId: String(convo._id), status: convo.status });
+    if (!convo)
+      return res.status(500).json({ error: "Failed to open conversation" });
+
+    return res.json({
+      conversationId: String(convo._id),
+      status: convo.status,
+    });
   } catch (err) {
-    console.error('[openConversation] failed:', err);
-    return res.status(500).json({ error: 'Failed to open conversation' });
+    console.error("[openConversation] failed:", err);
+    return res.status(500).json({ error: "Failed to open conversation" });
   }
 }
 
 // ── Accept a pending request (recipient only) ─────────────────────────
+//
+// Still needed even though replying auto-accepts: accepting without replying
+// is a distinct action, and it is what moves the row from Requests into
+// Messages before the user has decided what to say.
 export async function acceptConversation(req, res) {
   try {
     const me = currentUserId(req);
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ error: 'Invalid conversation id' });
+      return res.status(400).json({ error: "Invalid conversation id" });
     }
 
     const convo = await Conversation.findById(id);
-    if (!convo) return res.status(404).json({ error: 'Conversation not found' });
+    if (!convo)
+      return res.status(404).json({ error: "Conversation not found" });
 
     const participants = convo.participants.map((p) => String(p));
     if (!participants.includes(me)) {
-      return res.status(403).json({ error: 'Not a participant' });
+      return res.status(403).json({ error: "Not a participant" });
     }
     if (String(convo.initiator) === me) {
-      return res.status(400).json({ error: 'Cannot accept your own request' });
+      return res.status(400).json({ error: "Cannot accept your own request" });
     }
 
-    if (convo.status !== 'accepted') {
-      convo.status = 'accepted';
+    if (convo.status !== "accepted") {
+      convo.status = "accepted";
       await convo.save();
     }
 
-    const io = req.app.get('io');
+    const io = req.app.get("io");
     if (io) {
       participants.forEach((p) =>
-        io.to(`user:${p}`).emit('chat:accepted', { conversationId: String(convo._id) })
+        io
+          .to(`user:${p}`)
+          .emit("chat:accepted", { conversationId: String(convo._id) }),
       );
     }
-    return res.json({ ok: true, status: convo.status, conversationId: String(convo._id) });
+
+    return res.json({
+      ok: true,
+      status: convo.status,
+      conversationId: String(convo._id),
+    });
   } catch (err) {
-    console.error('[acceptConversation] failed:', err);
-    return res.status(500).json({ error: 'Failed to accept conversation' });
+    console.error("[acceptConversation] failed:", err);
+    return res.status(500).json({ error: "Failed to accept conversation" });
   }
 }
 
@@ -257,13 +337,14 @@ export async function getMessages(req, res) {
     const { before, limit = 50 } = req.query;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ error: 'Invalid conversation id' });
+      return res.status(400).json({ error: "Invalid conversation id" });
     }
 
-    const convo = await Conversation.findById(id).populate('participants');
-    if (!convo) return res.status(404).json({ error: 'Conversation not found' });
+    const convo = await Conversation.findById(id).populate("participants");
+    if (!convo)
+      return res.status(404).json({ error: "Conversation not found" });
     if (!convo.participants.map((p) => String(p._id)).includes(me)) {
-      return res.status(403).json({ error: 'Not a participant' });
+      return res.status(403).json({ error: "Not a participant" });
     }
 
     // The other participant — the chat header needs this to show name + avatar.
@@ -277,59 +358,84 @@ export async function getMessages(req, res) {
     const docs = await Message.find(query)
       .sort({ createdAt: -1 })
       .limit(Math.min(Number(limit) || 50, 100))
-      .populate('sender');
+      .populate("sender");
 
     const messages = docs.reverse().map((m) => m.toClient());
+
+    // Whether this user may send right now, so the input can be disabled
+    // BEFORE they type rather than after the send is rejected. Only the
+    // initiator of a still-pending thread is ever limited — a recipient
+    // replying accepts the conversation, so they always can.
+    const isInitiator = String(convo.initiator) === me;
+    let canSend = true;
+    let sendBlockedReason = null;
+
+    if (convo.status === "pending" && isInitiator) {
+      const sent = await Message.countDocuments({
+        conversation: convo._id,
+        sender: me,
+      });
+      canSend = sent < 1;
+      sendBlockedReason = canSend ? null : "chatPendingLimit";
+    }
+
     return res.json({
       messages,
       otherUser,
       user: otherUser,
-      conversation: { id: String(convo._id), status: convo.status, initiator: String(convo.initiator) },
+      conversation: {
+        id: String(convo._id),
+        status: convo.status,
+        initiator: String(convo.initiator),
+        canSend,
+        sendBlockedReason,
+      },
     });
   } catch (err) {
-    console.error('[getMessages] failed:', err);
-    return res.status(500).json({ error: 'Failed to load messages' });
+    console.error("[getMessages] failed:", err);
+    return res.status(500).json({ error: "Failed to load messages" });
   }
 }
-// localpulse/server/src/controllers/chatController.js
-// REPLACE the chatUnreadCount function with this version.
-//
-// WHY: the old query counted unread messages only in status:'accepted'
-// conversations. That was fine when the message-request gate blocked messages
-// in pending threads — but the gate has been removed, so people can now send
-// freely into pending conversations. Unread messages there were invisible to
-// the badge, so a message from someone whose request you haven't accepted
-// produced no unread count. Now we count unread across ALL of the user's
-// conversations. We also return requestCount, which the web AppNav reads.
 
+// ── Unread + request counts for the ✉ badge ───────────────────────────
+//
+// `count` deliberately covers ACCEPTED conversations only, and requestCount
+// covers pending ones. The client adds them together for a single badge — so
+// counting unread across all conversations would double-count: a pending
+// thread with one unread message would contribute 1 to each, and the badge
+// would read 2 for one waiting person.
+//
+// The two are returned separately rather than pre-summed so the client can
+// also show them apart, which the Messages screen does.
 export async function chatUnreadCount(req, res) {
   try {
     const me = currentUserId(req);
 
-    // ALL conversations the user is in — not just accepted. A message in a
-    // still-pending thread is just as unread as one in an accepted thread.
-    const convos = await Conversation.find({ participants: me }).select('_id');
-    const ids = convos.map((c) => c._id);
+    const convos = await Conversation.find({
+      participants: me,
+      status: "accepted",
+    }).select("_id");
 
     const count = await Message.countDocuments({
-      conversation: { $in: ids },
+      conversation: { $in: convos.map((c) => c._id) },
+      // My own messages are never unread — readBy already contains the
+      // sender, but excluding explicitly means a bug in that write cannot
+      // inflate the badge.
       sender: { $ne: me },
       readBy: { $ne: me },
     });
 
-    // Incoming requests awaiting this user's approval (pending, not initiated by
-    // them). Returned so the client can show a combined or split badge without a
-    // second round-trip.
+    // Incoming requests awaiting this user's approval.
     const requestCount = await Conversation.countDocuments({
       participants: me,
-      status: 'pending',
+      status: "pending",
       initiator: { $ne: me },
     });
 
     return res.json({ count, requestCount });
   } catch (err) {
-    console.error('[chatUnreadCount] failed:', err);
-    return res.status(500).json({ error: 'Failed to count unread' });
+    console.error("[chatUnreadCount] failed:", err);
+    return res.status(500).json({ error: "Failed to count unread" });
   }
 }
 
@@ -340,22 +446,24 @@ export async function markRead(req, res) {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ error: 'Invalid conversation id' });
+      return res.status(400).json({ error: "Invalid conversation id" });
     }
 
     const convo = await Conversation.findById(id);
-    if (!convo) return res.status(404).json({ error: 'Conversation not found' });
+    if (!convo)
+      return res.status(404).json({ error: "Conversation not found" });
     if (!convo.participants.map((p) => String(p)).includes(me)) {
-      return res.status(403).json({ error: 'Not a participant' });
+      return res.status(403).json({ error: "Not a participant" });
     }
 
     await Message.updateMany(
       { conversation: id, sender: { $ne: me }, readBy: { $ne: me } },
-      { $addToSet: { readBy: me } }
+      { $addToSet: { readBy: me } },
     );
+
     return res.json({ ok: true });
   } catch (err) {
-    console.error('[markRead] failed:', err);
-    return res.status(500).json({ error: 'Failed to mark read' });
+    console.error("[markRead] failed:", err);
+    return res.status(500).json({ error: "Failed to mark read" });
   }
 }
