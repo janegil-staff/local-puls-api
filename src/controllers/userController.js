@@ -27,12 +27,12 @@ function haversineKm([lng1, lat1], [lng2, lat2]) {
 // Whole years, by calendar.
 //
 // NOT elapsed-milliseconds / 365.25: that drifts by a day or two depending on
-// where leap years fall, so the same person can read as 24 here and 25 in a
-// screen that computed it differently. On an app with an 18+ gate and age-range
-// matching, two answers to "how old is this person" is not acceptable.
+// where leap years fall, so the same person reads as 24 here and 25 in a screen
+// that computed it differently. Someone whose birthday is today comes out a
+// year young under the division — on an 18+ gate that is the wrong direction.
 //
-// The model's ageFromDob still uses the division — worth aligning, but changing
-// a serializer used everywhere is a separate edit.
+// The model's ageFromDob still uses the division. Worth aligning, but it feeds
+// toPublic() which is used everywhere, so that is a separate edit.
 function ageFrom(dob, now = new Date()) {
   if (!dob) return null;
   const birth = new Date(dob);
@@ -44,6 +44,26 @@ function ageFrom(dob, now = new Date()) {
   if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) age -= 1;
 
   return age;
+}
+
+// Pushes a live follower count to the person being followed.
+//
+// notify() sends a PUSH NOTIFICATION — it does not touch an app that is
+// already open. Without this emit, someone looking at their own profile when
+// a follow lands sees the number change only on the next pull-to-refresh,
+// which reads as the app being stale rather than live.
+//
+// Fire-and-forget by design: the count is also returned by the HTTP response
+// and recomputed on every profile load, so a missed emit self-corrects. The
+// target being offline is the normal case, not an error.
+function emitFollowerCount(req, targetId, followerCount) {
+  const io = req.app.get("io");
+  if (!io) return;
+
+  io.to(`user:${targetId}`).emit("profile:followers", {
+    userId: String(targetId),
+    followerCount,
+  });
 }
 
 export async function getProfile(req, res) {
@@ -123,12 +143,12 @@ export async function getProfile(req, res) {
 
 // ── Follower / following lists ────────────────────────────────────────
 //
-// Both are behind requireAuth. A follower list on a proximity app is a social
+// Both behind requireAuth. A follower list on a proximity app is a social
 // graph tied to physical location — who this person knows, near where they
 // live — so it is not something to hand out to anyone with the URL.
 //
-// If you decide these should be private to the profile owner rather than
-// visible to any signed-in user, add:
+// If these should be private to the profile owner rather than visible to any
+// signed-in user, add:
 //
 //   if (String(req.userId) !== String(req.params.id)) return res.status(403)...
 //
@@ -138,8 +158,8 @@ async function followList(req, res, { direction }) {
   const { before, limit } = req.query;
   const lim = Math.min(Number(limit) || 30, 100);
 
-  // direction 'followers' -> people following :id
-  // direction 'following' -> people :id follows
+  // 'followers' -> people following :id
+  // 'following' -> people :id follows
   const match =
     direction === "followers"
       ? { following: req.params.id }
@@ -176,6 +196,9 @@ async function followList(req, res, { direction }) {
       // them in bulk.
       ...u.toPublic(),
       followedByMe: followedByMe.has(String(u._id)),
+      // Lets the list hide the follow button on your own row rather than
+      // showing one the server will reject.
+      isSelf: String(u._id) === String(req.userId),
     })),
     // Cursor for the next page. Null when this page was not full, so the
     // client knows to stop.
@@ -221,10 +244,15 @@ export async function follow(req, res) {
       { upsert: true },
     );
 
-    // Only notify on a NEW edge. Without this check, re-following someone you
-    // already follow pings them again — which is a nuisance the follower
-    // cannot see and would never intend.
     const isNew = result.upsertedCount > 0;
+
+    const followerCount = await Follow.countDocuments({
+      following: target._id,
+    });
+
+    // Only notify on a NEW edge. Without this check, re-following someone you
+    // already follow pings them again — a nuisance the follower cannot see and
+    // would never intend.
     if (isNew) {
       await notify({
         userId: target._id,
@@ -233,14 +261,12 @@ export async function follow(req, res) {
         title: "New follower",
         body: "Someone started following you",
       });
+
+      emitFollowerCount(req, target._id, followerCount);
     }
 
     // Count returned so the client can reconcile its optimistic value against
     // the truth without a second request.
-    const followerCount = await Follow.countDocuments({
-      following: target._id,
-    });
-
     return res.json({ following: true, followerCount });
   } catch (err) {
     console.error("follow error", err);
@@ -250,11 +276,21 @@ export async function follow(req, res) {
 
 export async function unfollow(req, res) {
   try {
-    await Follow.deleteOne({ follower: req.userId, following: req.params.id });
+    const result = await Follow.deleteOne({
+      follower: req.userId,
+      following: req.params.id,
+    });
 
     const followerCount = await Follow.countDocuments({
       following: req.params.id,
     });
+
+    // Only when an edge was actually removed. Unfollowing someone you were not
+    // following is a no-op, and emitting anyway would push a redundant update
+    // to a device that is already correct.
+    if (result.deletedCount > 0) {
+      emitFollowerCount(req, req.params.id, followerCount);
+    }
 
     return res.json({ following: false, followerCount });
   } catch (err) {
