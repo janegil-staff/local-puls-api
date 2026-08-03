@@ -21,6 +21,7 @@ import {
 } from "../controllers/adminRolesController.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
+import { adminListRetractedMessages } from "../controllers/adminRetractedController.js";
 import { requireModerator } from "../middleware/requireModerator.js";
 
 const router = Router();
@@ -68,6 +69,18 @@ router.get(
   requireAuth,
   requireModerator,
   adminListHiddenMessages,
+);
+
+// Messages a SENDER withdrew. Retraction is irreversible and there is no
+// restore here by design — this exists so a moderator can still read what
+// was said when a complaint arrives after the fact. retractMessage refuses
+// once a Report exists, so a row flagged BOTH retracted and reported means
+// the report came second, and the thread will not contain the text.
+router.get(
+  "/messages/retracted",
+  requireAuth,
+  requireModerator,
+  adminListRetractedMessages,
 );
 
 // Messages a MODERATOR took down — "removed by moderators" in the admin UI.

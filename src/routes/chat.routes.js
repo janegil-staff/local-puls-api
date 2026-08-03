@@ -9,26 +9,10 @@ import {
   sendMessage,
   hideMessage,
   unhideMessage,
-  // TEMPORARILY DISABLED — retractMessage and unretractMessage do not exist in
-  // chatController.js. Importing them crashed the API at startup:
-  //
-  //   SyntaxError: The requested module '../controllers/chatController.js'
-  //   does not provide an export named 'retractMessage'
-  //
-  // An ESM named-import failure takes down the whole process, so this file
-  // referencing two absent handlers meant nothing served at all — not chat,
-  // not admin, not auth.
-  //
-  // retractMessage is still to be written. unretractMessage is NOT: retraction
-  // was made irreversible, and the confirm dialog already tells the user so.
-  // Delete this block rather than restoring it.
-  //
-  // retractMessage,
-  // unretractMessage,
+  retractMessage,
   reportMessage,
   chatUnreadCount,
   markRead,
-  retractMessage,
 } from "../controllers/chatController.js";
 import { requireAuth } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
@@ -67,19 +51,19 @@ router.post("/conversations/:id/read", requireAuth, markRead);
 //                  message around a moderator's review of it.
 //   report         to the moderation queue.
 //
+// HIDE AND RETRACT ARE NOT INTERCHANGEABLE, and picking the wrong one on the
+// client is invisible until much later. Hide writes to hiddenFor and shows up
+// in the admin Deleted-messages list; retract writes retractedAt and shows up
+// in Retracted. A "delete for me" button wired to /retract removes the message
+// for both parties and leaves the Deleted page permanently empty.
+//
 // No validate(): none of these has a body except report, whose `reason` is an
 // enum this validate() DSL cannot express — reportMessage checks it against
 // REPORT_REASONS and returns 400 rather than letting an unknown value reach
 // Mongoose as a 500.
 router.post("/messages/:id/hide", requireAuth, hideMessage);
 router.post("/messages/:id/unhide", requireAuth, unhideMessage);
-
-// Re-enable once retractMessage exists in chatController.js. The web client
-// already calls this path, so it 404s until then — a working 404 beats a dead
-// server.
-// router.post("/messages/:id/retract", requireAuth, retractMessage);
-
+router.post("/messages/:id/retract", requireAuth, retractMessage);
 router.post("/messages/:id/report", requireAuth, reportMessage);
 
-router.post("/messages/:id/retract", requireAuth, retractMessage);
 export default router;
