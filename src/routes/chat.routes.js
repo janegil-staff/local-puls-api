@@ -8,9 +8,6 @@ import {
   getMessages,
   sendMessage,
   hideMessage,
-  unhideMessage,
-  retractMessage,
-  unretractMessage,
   reportMessage,
   chatUnreadCount,
   markRead,
@@ -42,24 +39,27 @@ router.post("/conversations/:id/read", requireAuth, markRead);
 // controller resolves the conversation itself for the membership check, so
 // passing it twice would only create a chance to disagree.
 //
-//   hide / unhide       the OTHER party's message, my view only. Unhide has no
-//                       time limit: hiding never affected them, so restoring
-//                       it cannot surprise anyone.
-//   retract / unretract MY message, gone for both. Retraction has no time
-//                       limit but is blocked once the message is reported;
-//                       UNDO is capped at 30s, because past that the message
-//                       reappears buried in someone else's thread at its
-//                       original timestamp.
-//   report              to the moderation queue.
+//   hide / unhide  the OTHER party's message, my view only. Unhide has no time
+//                  limit: hiding never affected them, so restoring it cannot
+//                  surprise anyone.
+//   retract        MY message, gone for both. Blocked once the message is
+//                  reported. IRREVERSIBLE — there is no unretract, by
+//                  decision: the sender is told so in the confirm dialog, and
+//                  an un-retract would let someone remove and restore a
+//                  message around a moderator's review of it.
+//   report         to the moderation queue.
 //
 // No validate(): none of these has a body except report, whose `reason` is an
 // enum this validate() DSL cannot express — reportMessage checks it against
 // REPORT_REASONS and returns 400 rather than letting an unknown value reach
 // Mongoose as a 500.
 router.post("/messages/:id/hide", requireAuth, hideMessage);
-router.post("/messages/:id/unhide", requireAuth, unhideMessage);
-router.post("/messages/:id/retract", requireAuth, retractMessage);
-router.post("/messages/:id/unretract", requireAuth, unretractMessage);
+
+// Re-enable once retractMessage exists in chatController.js. The web client
+// already calls this path, so it 404s until then — a working 404 beats a dead
+// server.
+// router.post("/messages/:id/retract", requireAuth, retractMessage);
+
 router.post("/messages/:id/report", requireAuth, reportMessage);
 
 export default router;

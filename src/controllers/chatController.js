@@ -115,6 +115,16 @@ function currentUserId(req) {
 // name says is worse than three literal filters.
 const REMOVED_EXCLUSION = { "removedByAdmin.at": { $exists: false } };
 
+// The same idea for retraction — the sender withdrawing their own message,
+// gone for BOTH participants. A third visibility mechanism alongside
+// hiddenFor and removedByAdmin, and it needs the same treatment at every
+// participant-facing read: sites are marked RETRACTED_FILTER below.
+//
+// Plain path, not a dotted one: retractedAt is a top-level Date, so
+// { $exists: false } is true exactly when the message has not been
+// retracted. No empty-subdocument trap like removedByAdmin has.
+const RETRACTED_EXCLUSION = { retractedAt: { $exists: false } };
+
 // Shared: persist a message + broadcast. Used by REST sendMessage.
 // Returns { ok, message } or { status, error } for the caller to respond with.
 //
@@ -269,7 +279,7 @@ async function findMessageForParticipant(messageId, userId) {
   }
 
   const msg = await Message.findById(messageId).select(
-    "_id conversation sender text imageUrl removedByAdmin",
+    "_id conversation sender text imageUrl removedByAdmin retractedAt",
   );
   if (!msg) return { status: 404, error: "Message not found" };
 
@@ -450,6 +460,10 @@ export async function listConversations(req, res) {
           // failure mode as the hidden case if omitted — a count for a message
           // that is not in the thread.
           "removedByAdmin.at": { $exists: false },
+          // RETRACTED_FILTER 2 of 3 — the per-conversation unread count. A
+          // retracted message is not in the thread, so a count including it
+          // can never be cleared by opening the conversation.
+          retractedAt: { $exists: false },
         },
       },
       { $group: { _id: "$conversation", n: { $sum: 1 } } },
@@ -666,6 +680,10 @@ export async function getMessages(req, res) {
       conversation: id,
       hiddenFor: { $ne: me },
       ...REMOVED_EXCLUSION,
+      // RETRACTED_FILTER 1 of 3 — the thread. Without this a retracted
+      // message disappears live over the socket and comes straight back on
+      // reload, which reads as the feature not working at all.
+      ...RETRACTED_EXCLUSION,
     };
     if (before) query.createdAt = { $lt: new Date(before) };
 
@@ -767,6 +785,9 @@ export async function chatUnreadCount(req, res) {
       // admin removal is not something the user did — they get a permanent
       // badge for a message they never saw and cannot act on.
       "removedByAdmin.at": { $exists: false },
+      // RETRACTED_FILTER 3 of 3 — the ✉ badge. Same failure as the other
+      // two: a permanent count for a message that is nowhere to be found.
+      retractedAt: { $exists: false },
     });
 
     // Incoming requests awaiting this user's approval.
@@ -830,5 +851,127 @@ export async function markRead(req, res) {
   } catch (err) {
     console.error("[markRead] failed:", err);
     return res.status(500).json({ error: "Failed to mark read" });
+  }
+}
+
+// ── Unhide a message I previously hid ─────────────────────────────────
+//
+// The mirror of hideMessage: $pull instead of $addToSet. No time limit —
+// hiding never affected the other party, so restoring my own view cannot
+// surprise anyone.
+//
+// The comment on hideMessage says there is no unhide endpoint "because a UI
+// listing what you have hidden would be needed to reach it". That is no longer
+// true: the web client shows an undo toast on hide, and undo calls this. Until
+// now that toast offered a reversal that 404'd.
+//
+// Idempotent. Unhiding something not hidden is a no-op 200, matching how
+// duplicate reports are handled.
+//
+// No socket broadcast, for the same reason hideMessage has none: the change
+// affects exactly one viewer, and telling the other participant anything would
+// leak that you had hidden their message.
+export async function unhideMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const found = await findMessageForParticipant(req.params.id, me);
+    if (found.error)
+      return res.status(found.status).json({ error: found.error });
+
+    const r = await Message.updateOne(
+      { _id: found.msg._id },
+      { $pull: { hiddenFor: me } },
+    );
+    console.log("[unhideMessage]", String(found.msg._id), me, r.modifiedCount);
+
+    return res.json({ ok: true, messageId: String(found.msg._id) });
+  } catch (err) {
+    console.error("[unhideMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to unhide message" });
+  }
+}
+
+// ── Retract my own message — gone for BOTH participants ───────────────
+//
+// The third visibility mechanism after hiddenFor and removedByAdmin, and the
+// only one the sender controls. The three RETRACTED_FILTER sites above are
+// what make it real; this handler only sets the flag.
+//
+// The text is NEVER blanked, for the same reason removal does not blank it: a
+// report filed before a retraction keeps its subject, and a moderator reading
+// the thread needs the real message.
+//
+// IRREVERSIBLE, by decision. There is no unretractMessage and adding one would
+// be a mistake:
+//
+//   - the confirm dialog tells the sender before they act ("Dette kan ikke
+//     angres"), so undo would make shipped copy false in the other direction
+//   - un-retract lets someone remove and restore a message around a
+//     moderator's review of it, so the queue and the thread disagree about
+//     what was ever said
+//
+// Refuses once reported. Without this, reporting is defeatable by the reported
+// party: report arrives, sender retracts, the moderator opens a thread with a
+// hole in it. Report.snapshotText survives, but the surrounding thread is half
+// the evidence — reportMessage's own comment makes that point.
+export async function retractMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const found = await findMessageForParticipant(req.params.id, me);
+    if (found.error)
+      return res.status(found.status).json({ error: found.error });
+
+    const msg = found.msg;
+
+    // Participation is not enough — retraction is the SENDER withdrawing their
+    // own words. Acting on the other party's message is what hide is for.
+    if (String(msg.sender) !== me) {
+      return res.status(403).json({
+        error: "You can only retract your own messages",
+        code: "not_sender",
+      });
+    }
+
+    // Already retracted: no-op 200. A double click or a second device must not
+    // produce a failure. Works because findMessageForParticipant now selects
+    // retractedAt — it did not before this patch.
+    if (msg.retractedAt) {
+      return res.json({
+        ok: true,
+        alreadyRetracted: true,
+        messageId: String(msg._id),
+      });
+    }
+
+    const reported = await Report.exists({ message: msg._id });
+    if (reported) {
+      return res.status(409).json({
+        error: "This message has been reported and cannot be retracted",
+        code: "message_reported",
+      });
+    }
+
+    await Message.updateOne(
+      { _id: msg._id },
+      { $set: { retractedAt: new Date() } },
+    );
+
+    // Both participants are in the conversation room, so one emit reaches the
+    // recipient and the sender's other devices. Unlike removal, retraction is
+    // symmetric and carries no per-participant difference, so a single room
+    // payload is correct here — see the warning on persistMessage's emit.
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`conversation:${msg.conversation}`).emit("chat:message:retracted", {
+        conversationId: String(msg.conversation),
+        messageId: String(msg._id),
+      });
+    }
+
+    console.log("[retractMessage]", String(msg._id), me);
+    return res.json({ ok: true, messageId: String(msg._id) });
+  } catch (err) {
+    console.error("[retractMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to retract message" });
   }
 }
