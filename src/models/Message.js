@@ -27,26 +27,35 @@ const messageSchema = new mongoose.Schema(
     // A URL returned by the /upload route. Absent on text messages.
     imageUrl: { type: String },
     readBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-    // Per-user soft hide — "delete for me", NOT a retraction. The message stays
-    // in the collection and stays visible to every participant whose id is
-    // absent from this array. Nothing is removed and the text is never blanked:
-    // a report on a message that no longer exists is unactionable.
+
+    // ── THREE WAYS A MESSAGE STOPS BEING VISIBLE ──────────────────────
     //
-    // Every participant read MUST filter on this (`hiddenFor: { $ne: me }`).
-    // Admin reads must NOT.
+    // None of them modifies or deletes the document. The text always stays,
+    // which is what keeps reports actionable, moderation honest, and the
+    // moderator's restore possible.
+
+    // 1. hiddenFor — "delete for me". Per-user, one-sided, irreversible, no
+    //    author. Used on the OTHER party's messages. They keep their copy.
     hiddenFor: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-    // Moderator removal. Distinct from hiddenFor in three ways: it affects
-    // BOTH parties, it has an author, and it is reversible.
+
+    // 2. retractedAt — "delete for everyone". The SENDER withdrawing their own
+    //    message; it disappears for both parties with no tombstone, at any
+    //    time, with no window.
     //
-    // Asymmetric by design. The SENDER sees a tombstone — they should learn
-    // their message was removed, or removal teaches nothing and deters
-    // nothing. The RECIPIENT sees nothing at all: the message is filtered out
-    // of their thread entirely, because a placeholder would keep pointing at
-    // content they were better off not receiving.
-    //
-    // `at` is the presence test — queries use { 'removedByAdmin.at': ... }
-    // rather than checking the subdocument, which always exists once the path
-    // is declared.
+    //    Be aware of what that buys and costs. It covers wrong-words and
+    //    wrong-chat completely. It also means a recipient can be sent
+    //    something and have it vanish before they can report it — reporting
+    //    requires seeing the message. The stored text and this timestamp are
+    //    the only remaining trace, visible to admins via toAdmin(), and
+    //    reportMessage() refuses to retract anything already reported so an
+    //    open complaint cannot have its subject erased underneath it.
+    retractedAt: { type: Date },
+
+    // 3. removedByAdmin — a moderator decision. Affects both parties, has an
+    //    author, and is reversible. ASYMMETRIC: the sender gets a tombstone
+    //    from toClient(); the recipient is filtered out at the query, because
+    //    a placeholder would keep pointing at content they were better off not
+    //    receiving. `at` is the presence test.
     removedByAdmin: {
       by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       at: { type: Date },
@@ -60,21 +69,19 @@ messageSchema.index({ conversation: 1, createdAt: 1 });
 // Supports the hiddenFor filter on the thread read, which is the hot path.
 messageSchema.index({ conversation: 1, hiddenFor: 1 });
 
-// viewerId decides what a removed message looks like. Pass it on every
-// participant-facing read; omit it only where the message cannot be removed
-// yet, as in the echo of a message just created.
+// viewerId decides what a REMOVED message looks like. Retracted messages never
+// reach here — they are filtered out for everyone, sender included.
 //
-// The text is BLANKED here rather than at the database — the document keeps
-// the original, because a moderator restoring a message must get the message
-// back and not an empty bubble.
+// The text is blanked in the response, never in the document: a moderator
+// restoring a message must get the message back, not an empty bubble.
 messageSchema.methods.toClient = function toClient(viewerId) {
   const s =
     this.sender && this.sender.toPublic ? this.sender.toPublic() : this.sender;
   const removed = Boolean(this.removedByAdmin && this.removedByAdmin.at);
 
   if (removed) {
-    // Recipients never reach this — they are filtered out at the query. If one
-    // does, fail closed: no text, no image.
+    // Recipients are filtered out at the query. If one arrives here anyway,
+    // fail closed: no text, no image.
     return {
       id: this._id,
       conversationId: this.conversation,
@@ -97,12 +104,13 @@ messageSchema.methods.toClient = function toClient(viewerId) {
   };
 };
 
-// Moderation serializer. Returns the ORIGINAL text regardless of who hid it or
-// whether it was removed — a moderator reviewing a report needs the record as
-// sent, and restoring requires it to still be there.
+// Moderation serializer. Returns the ORIGINAL text no matter who hid it, who
+// retracted it, or whether a moderator removed it — a report is unactionable
+// without the record as sent, and restore needs it to still be there.
 //
-// Separate from toClient() rather than a flag on it so a participant read path
-// can never serve hidden or removed content by passing the wrong argument.
+// Separate from toClient() rather than a flag on it, so a participant read
+// path can never serve hidden, retracted or removed content by passing the
+// wrong argument.
 messageSchema.methods.toAdmin = function toAdmin() {
   const s =
     this.sender && this.sender.toPublic ? this.sender.toPublic() : this.sender;
@@ -116,6 +124,8 @@ messageSchema.methods.toAdmin = function toAdmin() {
     ...(this.imageUrl ? { imageUrl: this.imageUrl } : {}),
     hiddenFor: (this.hiddenFor || []).map(String),
     hiddenCount: (this.hiddenFor || []).length,
+    retracted: Boolean(this.retractedAt),
+    retractedAt: this.retractedAt || null,
     removed: Boolean(r.at),
     removedAt: r.at || null,
     removedBy: r.by ? String(r.by) : null,

@@ -2,93 +2,34 @@
 //
 // Chat controllers — SINGLE SOURCE OF TRUTH for persistence. Both web and
 // mobile send via REST (POST /chat/conversations/:id/messages -> sendMessage).
-// The controller saves the message, then emits it over the socket so the other
-// participant gets it live.
 //
 // Conversation: { participants[], pairKey, status: 'pending'|'accepted',
 //                 initiator, lastMessage: String, lastMessageAt }
 // Message:      { conversation, sender, text?, imageUrl?, readBy[], hiddenFor[],
-//                 removedByAdmin?: { by, at, reason } }
-//               + toClient(viewerId) / toAdmin()
+//                 retractedAt?, removedByAdmin? } + toClient(viewerId)/toAdmin()
 //
 // MESSAGE REQUESTS: a stranger gets ONE message before the recipient has
-// accepted. Enforced in persistMessage via lib/pendingGuard.js, so both the
-// REST path and any future socket path go through the same check.
+// accepted. Enforced in persistMessage via lib/pendingGuard.js. This gate was
+// removed at one point and the logs showed two consecutive sends into a
+// pending thread, both 201 — without it, "message requests" is a label on a
+// screen rather than a protection.
 //
-// This gate was removed at one point and the logs showed the consequence
-// immediately: two consecutive sends into a pending thread, both 201. Without
-// it, "message requests" is a label on a screen rather than a protection.
+// THREE WAYS A MESSAGE STOPS BEING VISIBLE, and they are not the same thing:
 //
-// HIDING (hideMessage) is per-user and additive: a user's id goes into the
-// message's hiddenFor array and every participant-facing READ filters on it.
-// It is NOT a retraction — the other side still sees the message, and the
-// document is never modified or removed. Three read paths filter, all marked
-// HIDDEN_FILTER below. Miss one and a hidden message returns through a side
-// door.
+//   hiddenFor[]     one-sided, per-user, irreversible. Used on the OTHER
+//                   party's messages; they keep their copy.
+//   retractedAt     the SENDER withdrawing their own message. Gone for BOTH,
+//                   no tombstone, no time limit.
+//   removedByAdmin  a moderator decision. Both parties, has an author,
+//                   reversible. Sender sees a tombstone; recipient sees
+//                   nothing.
 //
-// REPORTING (reportMessage) is what makes hiding defensible. Hide-for-me is
-// only safe because the record survives for moderation; a hidden message is
-// still reportable by the OTHER party, who never lost their copy, and a
-// reported message is untouched by anyone hiding it since hiding never
-// modifies the document.
+// None deletes or edits the document. Reports stay actionable, admins keep the
+// record, restore stays possible.
 //
-// ── ADMIN REMOVAL — a THIRD visibility mechanism, distinct from both ──
-//
-// removedByAdmin: { by, at, reason } is set by adminRemoveMessage (see
-// adminController.js). Unlike hiding, it is global rather than per-user, and
-// SYMMETRIC: neither participant sees the message afterwards.
-//
-//   sender     → the message is gone from their thread. No tombstone, no
-//                marker, no gap.
-//   recipient  → same.
-//
-// Both are filtered at the QUERY, so this is a flat exclusion in every
-// participant-facing read. Sites are marked REMOVED_FILTER below.
-//
-// AN EARLIER VERSION OF THIS FILE WAS ASYMMETRIC — the sender kept a tombstone
-// so that removal was perceptible to the person who caused it. That was
-// changed deliberately. The tradeoff is real and worth stating so it is not
-// re-litigated by whoever reads this next:
-//
-//   what symmetric removal buys   the sender cannot infer from a marker what
-//                                 was removed or when, and the recipient's
-//                                 thread has no shape suggesting something
-//                                 was taken out of it.
-//   what it costs                 a message that silently vanishes reads as a
-//                                 failed send, so the likeliest next action is
-//                                 that the sender types it again. Removal
-//                                 teaches nothing and deters nothing on its
-//                                 own; it has to be paired with banning the
-//                                 account, or it is a treadmill.
-//
-// The second point is not a reason to revert. It is a reason that
-// adminRemoveMessage should rarely be the ONLY action taken — setBanned is in
-// the same controller for exactly this case.
-//
-// The text is NEVER blanked in the database. That is what makes restore
-// return the real message instead of an empty bubble, and it is what keeps a
-// removed message meaningful in the moderation queue.
-//
-// toClient(viewerId) still takes a viewer, and Message.js may still contain a
-// tombstone branch for a removed message. NOTHING IN THIS FILE REACHES IT any
-// more — every participant read excludes removed messages before serialisation
-// — so that branch is dead code from the participant surface. Left in place
-// rather than stripped, because reinstating the tombstone is a one-line change
-// to the getMessages query while re-deriving the serializer is not.
-//
-// COUNTING is deliberately unfiltered by removal, in both places it happens:
-// the pending-request gate here and checkPendingRules in pendingGuard.js. If
-// an admin removed your one opening message, that must not hand you a fresh
-// one — the count is of what was SENT. This matters MORE under symmetric
-// removal, not less: the sender cannot see that their message is gone, so
-// without this they would find themselves able to send into a stranger's
-// thread repeatedly with no idea why.
-//
-// KNOWN LEAK — Conversation.lastMessage. The inbox row preview is
-// denormalised onto the conversation by persistMessage and is not recomputed
-// here; adminRemoveMessage calls recomputeConversationPreview for that. Under
-// symmetric removal this applies to BOTH participants — a stale preview would
-// show the removed text to the sender and the recipient alike.
+// Every participant-facing read carries the same three clauses and is marked
+// PARTICIPANT_FILTER below. There are three. Missing one lets a message back
+// through a side door. Admin reads carry NONE of them.
 
 import mongoose from "mongoose";
 import Conversation, { buildPairKey } from "../models/Conversation.js";
@@ -100,28 +41,19 @@ function currentUserId(req) {
   return String(req.user.id || req.user.sub);
 }
 
-// Query fragment for every participant-facing read. Flat exclusion — removal
-// is symmetric, so no read here ever returns a removed message to anyone.
+// The visibility clauses, in one place. `me` is a string id.
 //
-// Tests "removedByAdmin.at" rather than "removedByAdmin" because a Mongoose
-// subdocument path may be stored as an empty object rather than omitted
-// entirely — { removedByAdmin: { $exists: false } } would then match nothing
-// and every message in every thread would vanish for everyone. The dotted path
-// is true in both storage shapes.
-//
-// Written out at each site rather than shared through a helper, because there
-// are only three and a helper here previously encoded the sender exception
-// that symmetric removal removed. A constant that no longer means what its
-// name says is worse than three literal filters.
-const REMOVED_EXCLUSION = { "removedByAdmin.at": { $exists: false } };
+// retracted: gone for everyone including the sender — they asked for it gone.
+// removed:   gone for everyone EXCEPT the sender, who gets a tombstone.
+// hidden:    gone for whoever hid it.
+function visibleTo(me) {
+  return {
+    hiddenFor: { $ne: me },
+    retractedAt: { $exists: false },
+    $or: [{ "removedByAdmin.at": { $exists: false } }, { sender: me }],
+  };
+}
 
-// Shared: persist a message + broadcast. Used by REST sendMessage.
-// Returns { ok, message } or { status, error } for the caller to respond with.
-//
-// `error` is a TRANSLATION KEY for the request-gate rejections
-// (chatPendingLimit), not a sentence — the app looks it up in its locale
-// files. The other errors here are plain strings because they indicate bugs
-// rather than states a user can act on.
 async function persistMessage({
   req,
   conversationId,
@@ -140,23 +72,15 @@ async function persistMessage({
   const isRecipient =
     convo.status === "pending" && String(convo.initiator) !== senderId;
 
-  // A recipient replying to a request IS acceptance. Requiring them to tap
-  // Accept and then type is a pointless extra step — they have plainly
-  // decided they want to talk. The Accept button still exists for accepting
-  // without replying.
+  // A recipient replying to a request IS acceptance. Flip BEFORE the guard so
+  // checkPendingRules sees an accepted conversation and lets the reply
+  // through; without this the thread deadlocks, with the initiator out of
+  // messages and the recipient never having accepted.
   //
-  // Flip BEFORE the guard runs, so checkPendingRules sees an accepted
-  // conversation and lets the reply through. Removing this without also
-  // handling the recipient in the guard leaves the thread deadlocked: the
-  // initiator is out of messages and the recipient never accepted.
-  //
-  // NOTE this makes the recipient branch of checkPendingRules unreachable
-  // from here — the guard returns chatPendingRecipient for a recipient, but a
-  // recipient never arrives at it still pending. Same for pendingState(),
-  // whose recipient answer (canSend: false) contradicts what actually happens.
-  // getMessages below therefore computes canSend inline rather than calling
-  // pendingState, and the divergence is worth resolving in pendingGuard.js
-  // before anything else starts calling it.
+  // This also makes the recipient branch of checkPendingRules — and
+  // pendingState(), whose recipient answer contradicts it — unreachable from
+  // here. getMessages computes canSend inline for that reason. Worth
+  // reconciling in pendingGuard.js before anything else calls it.
   if (isRecipient) {
     convo.status = "accepted";
     await convo.save();
@@ -187,20 +111,8 @@ async function persistMessage({
   await convo.save();
 
   await message.populate("sender");
+  const payload = message.toClient(String(senderId));
 
-  // A just-created message can never be removed, so the viewer argument is
-  // immaterial here — but it is passed anyway so that every toClient call site
-  // in this file has one. A call with no viewer is the shape that silently
-  // leaks a removed message's text, and the way to never write one is to never
-  // leave an example of one lying around.
-  const payload = message.toClient(senderId);
-
-  // Broadcast live to anyone in the conversation room + notify the other side.
-  //
-  // ONE payload to the whole room, which is only safe because the message is
-  // new. Do NOT copy this shape for removal/restore events: those need a
-  // per-participant payload, since the sender gets a tombstone and the
-  // recipient gets a deletion. adminController emits per-user for that reason.
   const io = req.app.get("io");
   if (io) {
     io.to(`conversation:${convo._id}`).emit("chat:message", payload);
@@ -247,29 +159,18 @@ export async function sendMessage(req, res) {
   }
 }
 
-// Shared membership check for the per-message actions below. Returns the
-// message document, or { status, error } to respond with.
+// Shared membership check for the per-message actions below.
 //
-// The 404-before-403 order is deliberate: a non-participant gets 403 for a
-// message that exists and 404 for one that does not, which leaks existence.
-// Both branches return before revealing any content, and the ids are random
-// ObjectIds, so the leak is not worth an extra query to close.
-//
-// NOT filtered by removedByAdmin, and the select now pulls it so callers can
-// decide for themselves. A recipient cannot normally reach a removed message
-// — it is absent from their thread — but a stale id from before the removal
-// could still arrive here, and neither action it feeds is harmful on one:
-// hiding is a no-op on something already invisible, and reporting something a
-// moderator has already acted on costs a queue row, not a leak. The 404 that
-// a filter here would produce is strictly worse: it would tell the recipient
-// that the message existed and then stopped existing.
+// 404-before-403 leaks existence to a non-participant, but both branches
+// return before revealing content and the ids are random ObjectIds, so it is
+// not worth an extra query to close.
 async function findMessageForParticipant(messageId, userId) {
   if (!mongoose.isValidObjectId(messageId)) {
     return { status: 400, error: "Invalid message id" };
   }
 
   const msg = await Message.findById(messageId).select(
-    "_id conversation sender text imageUrl removedByAdmin",
+    "_id conversation sender text imageUrl retractedAt",
   );
   if (!msg) return { status: 404, error: "Message not found" };
 
@@ -282,28 +183,18 @@ async function findMessageForParticipant(messageId, userId) {
   return { msg };
 }
 
-// ── Hide a single message for the calling user ────────────────────────
+// ── Hide a message for the calling user only ──────────────────────────
 //
-// "Delete for me", not a retraction. $addToSet on hiddenFor; the document is
-// never modified otherwise and never removed.
+// "Delete for me". For the OTHER party's messages — the sender's own go
+// through retractMessage instead, which removes them for both.
 //
-// Idempotent: hiding twice is a no-op, so a double-click or a retried request
-// cannot corrupt the array.
+// Idempotent via $addToSet. No socket broadcast, deliberately: the change is
+// one user's view, and telling the other side would leak that you removed
+// something, which is exactly what delete-for-me is not. Cost is that a second
+// tab of the same account waits for a reload.
 //
-// No socket broadcast, deliberately. The change affects exactly one user's
-// view, and the other participant must NOT be told — an event saying "message
-// hidden" would leak that you removed something, which is precisely what
-// delete-for-me is not. The cost is that a second tab of the same account will
-// not update until it reloads; acceptable for a deliberate manual action.
-//
-// There is NO unhide endpoint. Adding one without a UI listing what you have
-// hidden would make it unreachable, and the client confirms before calling
-// this because of that.
-//
-// Hiding your own tombstone is allowed and works: hiddenFor is checked before
-// the removal filter in every read, so a sender who does not want to look at
-// the marker can put it away. Restore will not bring it back for them, which
-// is correct — that is their own hide, not the admin's removal.
+// No unhide endpoint. Adding one without a UI listing what you hid would make
+// it unreachable, which is why the client confirms first.
 export async function hideMessage(req, res) {
   try {
     const me = currentUserId(req);
@@ -311,11 +202,10 @@ export async function hideMessage(req, res) {
     if (found.error)
       return res.status(found.status).json({ error: found.error });
 
-    const r = await Message.updateOne(
+    await Message.updateOne(
       { _id: found.msg._id },
       { $addToSet: { hiddenFor: me } },
     );
-    console.log("[hideMessage]", String(found.msg._id), me, r.modifiedCount);
 
     return res.json({ ok: true, messageId: String(found.msg._id) });
   } catch (err) {
@@ -324,40 +214,91 @@ export async function hideMessage(req, res) {
   }
 }
 
+// ── Retract your own message — removes it for BOTH parties ────────────
+//
+// No time window: a message can be withdrawn at any point after sending.
+//
+// That is a deliberate product choice with a real cost, worth restating where
+// the code lives. Reporting requires seeing the message, so unrestricted
+// retraction means something can be sent and erased before the recipient can
+// file anything. The two mitigations here are the only ones:
+//
+//   1. The document is never deleted. Text and retractedAt persist, and
+//      toAdmin() surfaces both, so an admin can still see what was sent.
+//   2. A message that has ALREADY been reported cannot be retracted — an open
+//      complaint must not have its subject vanish underneath it. Remove the
+//      Report lookup below if you want retraction to be unconditional; it
+//      affects only messages someone has actively complained about.
+//
+// Sender-only: retracting someone else's message would be a delete-for-them
+// button, which is not a thing this app should have.
+export async function retractMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const found = await findMessageForParticipant(req.params.id, me);
+    if (found.error)
+      return res.status(found.status).json({ error: found.error });
+
+    const msg = found.msg;
+
+    if (String(msg.sender) !== me) {
+      return res.status(403).json({ error: "Not your message" });
+    }
+
+    // Idempotent: retracting twice is a second button press, not an error.
+    if (msg.retractedAt) {
+      return res.json({ ok: true, messageId: String(msg._id), already: true });
+    }
+
+    const reported = await Report.findOne({ message: msg._id }).select("_id");
+    if (reported) {
+      return res.status(409).json({ error: "chatRetractReported" });
+    }
+
+    await Message.updateOne(
+      { _id: msg._id },
+      { $set: { retractedAt: new Date() } },
+    );
+
+    // Both clients drop it live. Sent to the conversation room, so anyone with
+    // the thread open sees it go without a reload.
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`conversation:${msg.conversation}`).emit("chat:message:retracted", {
+        conversationId: String(msg.conversation),
+        messageId: String(msg._id),
+      });
+    }
+
+    return res.json({ ok: true, messageId: String(msg._id) });
+  } catch (err) {
+    console.error("[retractMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to retract message" });
+  }
+}
+
 // ── Report a single message ───────────────────────────────────────────
 //
-// This is the counterweight to hiding. Hide-for-me is only defensible because
-// the record survives — so the report path must exist, must reach the same
-// moderation queue as post and user reports, and must not be defeatable by
-// the reported party (who cannot touch the other side's copy at all).
+// Reaches the same moderation queue as post and user reports. reportedUser is
+// set to the sender so group-by-user views pick these up unchanged.
 //
-// The report captures snapshotText and conversation alongside the message id:
-// a moderator needs the text as it was reported, and needs the thread around
-// it, because one line lifted out of a conversation is usually unjudgeable.
+// snapshotText captures the text as reported — messages are not editable
+// today, but a report re-reading the live document would be worthless the day
+// they are.
 //
-// snapshotText survives admin removal for the same reason restore does: the
-// text is never blanked in the database. A report filed before a removal, and
-// the removal itself, therefore do not fight over the same field.
+// Filing twice returns 200 with duplicate: true, not a 409; the unique sparse
+// index on { reporter, message } makes that hold under a race.
 //
-// reportedUser is set to the sender so the queue's group-by-user view picks
-// message reports up without any change to its existing queries.
-//
-// Filing twice is a no-op returning 200, not a 409. A duplicate report is a
-// user pressing a button twice, not an error state worth surfacing — and the
-// unique sparse index on { reporter, message } makes that true even under a
-// race.
-//
-// NOT filtered by hiddenFor: you can report a message you have hidden. The
-// two actions are independent, and someone who hides something abusive and
-// then decides to report it must not find the option gone.
+// Reporting is NOT blocked by hiddenFor: you can report a message you hid.
+// Retracted messages cannot be reported, because they are gone from the
+// reporter's thread before they could press the button — see retractMessage.
 export async function reportMessage(req, res) {
   try {
     const me = currentUserId(req);
     const { reason, note } = req.body || {};
 
-    // Validated here rather than in the route's validate() middleware, whose
-    // schema DSL has no enum support — an unknown reason would otherwise
-    // reach Mongoose and surface as a 500 rather than a 400.
+    // Validated here rather than in validate(), whose schema DSL has no enum
+    // support — an unknown reason would reach Mongoose and surface as a 500.
     if (!REPORT_REASONS.includes(reason)) {
       return res.status(400).json({ error: "Invalid reason" });
     }
@@ -368,10 +309,6 @@ export async function reportMessage(req, res) {
 
     const msg = found.msg;
 
-    // Reporting your own message is meaningless and would put a moderator's
-    // time on a complaint with no counterparty. This also means a sender
-    // cannot report their own tombstone, which is the right outcome — the
-    // route for disputing a removal is an appeal, not the abuse queue.
     if (String(msg.sender) === me) {
       return res.status(400).json({ error: "Cannot report your own message" });
     }
@@ -399,8 +336,6 @@ export async function reportMessage(req, res) {
       .status(201)
       .json({ ok: true, reportId: String(report._id), duplicate: false });
   } catch (err) {
-    // The unique index firing means two requests raced. That is still a
-    // success from the user's point of view.
     if (err?.code === 11000) {
       return res.json({ ok: true, duplicate: true });
     }
@@ -410,16 +345,11 @@ export async function reportMessage(req, res) {
 }
 
 // ── Accepted conversations, with a per-conversation unread count ──────
-//
-// The client's Row renders `convo.unread`, so it has to be supplied here.
-// Computed with ONE aggregate over all the user's conversation ids rather
-// than a countDocuments per row, which would be N queries for a list.
 export async function listConversations(req, res) {
   try {
     const me = currentUserId(req);
 
-    // No .lean(): we need the User document methods (toPublic) so the avatar
-    // resolves from photos[0] via the model's own serializer.
+    // No .lean(): we need toPublic() so the avatar resolves from photos[0].
     const convos = await Conversation.find({
       participants: me,
       status: "accepted",
@@ -430,10 +360,9 @@ export async function listConversations(req, res) {
     const ids = convos.map((c) => c._id);
 
     // Cast explicitly: aggregate does NOT run values through the schema, so a
-    // raw string here silently matches nothing and every count comes back
-    // zero. countDocuments elsewhere in this file gets away with a string
-    // because Mongoose casts it — aggregate does not. The same applies to the
-    // hiddenFor filter below, which is why it uses meId and not me.
+    // raw string matches nothing and every count comes back zero.
+    // countDocuments elsewhere gets away with a string because Mongoose casts
+    // it — aggregate does not.
     const meId = new mongoose.Types.ObjectId(me);
 
     const unreadAgg = await Message.aggregate([
@@ -442,13 +371,12 @@ export async function listConversations(req, res) {
           conversation: { $in: ids },
           sender: { $ne: meId },
           readBy: { $ne: meId },
-          // HIDDEN_FILTER 1 of 3 — a message I hid must not keep a row bolded
-          // with a count I cannot clear by opening the thread.
+          // PARTICIPANT_FILTER 1 of 3. Everything counted here is someone
+          // else's message, so removal needs no sender exception — a
+          // recipient never sees a removed one. A count the user cannot clear
+          // by opening the thread reads as a broken badge.
           hiddenFor: { $ne: meId },
-          // REMOVED_FILTER 1 of 3 — flat exclusion, like all three. Removal is
-          // symmetric, so nothing removed is ever counted for anyone. Same
-          // failure mode as the hidden case if omitted — a count for a message
-          // that is not in the thread.
+          retractedAt: { $exists: false },
           "removedByAdmin.at": { $exists: false },
         },
       },
@@ -461,19 +389,13 @@ export async function listConversations(req, res) {
       return {
         id: String(c._id),
         status: c.status,
-        // KNOWN LIMITATION: lastMessage is denormalised onto the conversation
-        // by persistMessage, so hiding the newest message does NOT change this
-        // preview — the inbox row still shows its text until someone sends
-        // again. Fixing it properly means resolving the newest non-hidden
-        // message per conversation, which is a second aggregate over the whole
-        // list. Left as-is deliberately; revisit if it bothers anyone.
-        //
-        // ADMIN REMOVAL MAKES THIS WORSE, and not tolerably so. The recipient
-        // is supposed to lose the content entirely, and this row hands it back
-        // to them. Unlike the hiding case it cannot be waved off as cosmetic.
-        // Fix belongs in adminRemoveMessage — recompute lastMessage from the
-        // newest non-removed message — NOT here, where it would cost a second
-        // aggregate on every inbox load to paper over a write-time omission.
+        // KNOWN LIMITATION: lastMessage is denormalised onto the conversation,
+        // so hiding, retracting or removing the newest message leaves its text
+        // in the inbox preview until someone sends again. It matters most for
+        // RETRACTION — the sender explicitly asked for it gone, and the first
+        // line of their inbox still shows it. Fix is to recompute
+        // convo.lastMessage in retractMessage when the retracted message is
+        // the newest.
         lastMessage: c.lastMessage,
         lastMessageAt: c.lastMessageAt,
         unread: unreadByConvo.get(String(c._id)) || 0,
@@ -505,11 +427,6 @@ export async function listRequests(req, res) {
       const other = (c.participants || []).find((p) => String(p._id) !== me);
       return {
         id: String(c._id),
-        // Same lastMessage caveat as listConversations, and it bites harder
-        // here: a request row IS the removed message, since a pending thread
-        // usually holds exactly one. Recomputing on removal leaves this row
-        // showing an empty preview, which is the correct outcome — the thread
-        // has nothing in it the recipient may see.
         lastMessage: c.lastMessage,
         lastMessageAt: c.lastMessageAt,
         otherUser: other ? other.toPublic() : null,
@@ -525,8 +442,8 @@ export async function listRequests(req, res) {
 }
 
 // ── Open (or re-open) a conversation with a user ──────────────────────
-// Uses pairKey (sorted participant ids) so a pair can only ever resolve to one
-// conversation. On the E11000 race (two opens at once), re-fetch the winner.
+// pairKey (sorted participant ids) means a pair resolves to one conversation.
+// On the E11000 race (two opens at once), re-fetch the winner.
 export async function openConversation(req, res) {
   try {
     const me = currentUserId(req);
@@ -540,8 +457,6 @@ export async function openConversation(req, res) {
     }
 
     const pairKey = buildPairKey(me, userId);
-
-    // Fast path: the conversation already exists.
     let convo = await Conversation.findOne({ pairKey });
 
     if (!convo) {
@@ -553,7 +468,6 @@ export async function openConversation(req, res) {
           status: "pending",
         });
       } catch (err) {
-        // E11000 = another request created it between our findOne and create.
         if (err?.code === 11000) {
           convo = await Conversation.findOne({ pairKey });
         } else {
@@ -578,8 +492,8 @@ export async function openConversation(req, res) {
 // ── Accept a pending request (recipient only) ─────────────────────────
 //
 // Still needed even though replying auto-accepts: accepting without replying
-// is a distinct action, and it is what moves the row from Requests into
-// Messages before the user has decided what to say.
+// moves the row from Requests into Messages before the user has decided what
+// to say.
 export async function acceptConversation(req, res) {
   try {
     const me = currentUserId(req);
@@ -644,29 +558,15 @@ export async function getMessages(req, res) {
       return res.status(403).json({ error: "Not a participant" });
     }
 
-    // The other participant — the chat header needs this to show name + avatar.
-    // Deep-linking to /messages/:id doesn't load the list, so supply it here.
+    // The chat header needs this — deep-linking to /messages/:id doesn't load
+    // the conversation list, so supply the other participant here.
     const other = convo.participants.find((p) => String(p._id) !== me);
     const otherUser = other ? other.toPublic() : null;
 
-    // HIDDEN_FILTER 2 of 3 — the thread itself. Without this the message
-    // reappears the moment the page reloads, which is the most obvious of the
-    // three and still the easiest to forget.
-    //
-    // REMOVED_FILTER 2 of 3 — flat, like the other two. This is the ONE read
-    // that returns the viewer's own messages, so it is the only place where
-    // the sender-exception used to live; under symmetric removal there is no
-    // exception and the sender loses their own message here exactly as the
-    // recipient does.
-    //
-    // THIS LINE IS THE WHOLE BEHAVIOUR. Reinstating the tombstone means
-    // changing this one filter back to an $or on { sender: me } and nothing
-    // else — the serializer in Message.js can still render it.
-    const query = {
-      conversation: id,
-      hiddenFor: { $ne: me },
-      ...REMOVED_EXCLUSION,
-    };
+    // PARTICIPANT_FILTER 2 of 3 — the thread itself, and the most obvious of
+    // the three to forget: without it a hidden message reappears the moment
+    // the page reloads.
+    const query = { conversation: id, ...visibleTo(me) };
     if (before) query.createdAt = { $lt: new Date(before) };
 
     const docs = await Message.find(query)
@@ -674,32 +574,19 @@ export async function getMessages(req, res) {
       .limit(Math.min(Number(limit) || 50, 100))
       .populate("sender");
 
-    // toClient(me) — the viewer argument no longer changes the output for
-    // removed messages, because none reach here. Kept because Message.js takes
-    // it and because it is the hook the tombstone would hang from again.
+    // The viewer decides what a removed message looks like — pass it.
     const messages = docs.reverse().map((m) => m.toClient(me));
 
-    // Whether this user may send right now, so the input can be disabled
-    // BEFORE they type rather than after the send is rejected. Only the
-    // initiator of a still-pending thread is ever limited — a recipient
-    // replying accepts the conversation, so they always can.
+    // Whether this user may send right now, so the input locks BEFORE they
+    // type rather than after a 403. Only the initiator of a still-pending
+    // thread is limited; a recipient replying accepts the conversation.
     //
-    // Computed inline rather than via pendingState() from pendingGuard.js:
-    // that helper answers canSend: false for a recipient, which contradicts
-    // the auto-accept in persistMessage. Reconcile the two before switching.
+    // Computed inline rather than via pendingState(), which answers
+    // canSend: false for a recipient and contradicts the auto-accept above.
     //
-    // DELIBERATELY NOT filtered by hiddenFor. Hiding your own opening message
-    // must not buy you another one — the count is of what was SENT, not of
-    // what you can still see. checkPendingRules counts the same way, so the
-    // client's view and the server's gate agree.
-    //
-    // DELIBERATELY NOT filtered by removedByAdmin either, and for a stronger
-    // reason. Excluding removed messages here would mean that having your
-    // opening message removed for abuse resets your one-message allowance and
-    // lets you send into the same stranger's thread again. checkPendingRules
-    // counts unfiltered too; if either side ever starts filtering, the client
-    // will offer a send the server then rejects, or worse, the server will
-    // allow one the client never showed.
+    // DELIBERATELY unfiltered. Hiding, retracting or having your opener
+    // removed must not buy you another one — the count is of what was SENT.
+    // checkPendingRules counts the same way, so client and gate agree.
     const isInitiator = String(convo.initiator) === me;
     let canSend = true;
     let sendBlockedReason = null;
@@ -733,14 +620,10 @@ export async function getMessages(req, res) {
 
 // ── Unread + request counts for the ✉ badge ───────────────────────────
 //
-// `count` deliberately covers ACCEPTED conversations only, and requestCount
-// covers pending ones. The client adds them together for a single badge — so
-// counting unread across all conversations would double-count: a pending
-// thread with one unread message would contribute 1 to each, and the badge
-// would read 2 for one waiting person.
-//
-// The two are returned separately rather than pre-summed so the client can
-// also show them apart, which the Messages screen does.
+// `count` covers ACCEPTED conversations only; requestCount covers pending
+// ones. The client sums them for one badge, so counting unread across all
+// conversations would double-count — a pending thread with one unread message
+// would contribute to each and the badge would read 2 for one waiting person.
 export async function chatUnreadCount(req, res) {
   try {
     const me = currentUserId(req);
@@ -752,35 +635,23 @@ export async function chatUnreadCount(req, res) {
 
     const count = await Message.countDocuments({
       conversation: { $in: convos.map((c) => c._id) },
-      // My own messages are never unread — readBy already contains the
-      // sender, but excluding explicitly means a bug in that write cannot
-      // inflate the badge.
+      // readBy already contains the sender, but excluding explicitly means a
+      // bug in that write cannot inflate the badge.
       sender: { $ne: me },
       readBy: { $ne: me },
-      // HIDDEN_FILTER 3 of 3 — the one people forget. Without it the ✉ badge
-      // shows a count for a message the user cannot find anywhere, and no
-      // amount of opening threads clears it. Reads as a broken badge.
+      // PARTICIPANT_FILTER 3 of 3 — the one people forget. Without it the ✉
+      // badge shows a count for a message the user cannot find anywhere, and
+      // opening threads never clears it.
       hiddenFor: { $ne: me },
-      // REMOVED_FILTER 3 of 3 — flat exclusion again, for the same reason as
-      // the aggregate: sender: { $ne: me } means nothing counted here is ever
-      // mine. This one is worse than the hidden case when missed, because an
-      // admin removal is not something the user did — they get a permanent
-      // badge for a message they never saw and cannot act on.
+      retractedAt: { $exists: false },
       "removedByAdmin.at": { $exists: false },
     });
 
-    // Incoming requests awaiting this user's approval.
-    //
     // Counts CONVERSATIONS, not messages, so a request with no message yet
     // still lights the badge. openConversation creates the thread the moment
-    // someone presses Message on a profile, which means an abandoned tap
-    // leaves a permanent empty request in the recipient's list. Worth making
-    // creation lazy — on first send — or excluding zero-message threads here.
-    //
-    // A request whose only message was removed is now one of those empty
-    // threads, and it still counts. That is arguably right: the recipient is
-    // still being asked to accept or decline a stranger. Revisit alongside the
-    // lazy-creation change, not before — they are the same fix.
+    // someone presses Message on a profile, so an abandoned tap leaves a
+    // permanent empty request. Worth making creation lazy — on first send — or
+    // excluding zero-message threads here.
     const requestCount = await Conversation.countDocuments({
       participants: me,
       status: "pending",
@@ -811,16 +682,9 @@ export async function markRead(req, res) {
       return res.status(403).json({ error: "Not a participant" });
     }
 
-    // Not filtered by hiddenFor: marking a hidden message read is harmless and
-    // keeps readBy honest for the sender's future read receipts, if those ever
-    // land. The badge already excludes hidden messages at the count.
-    //
-    // Not filtered by removedByAdmin either, on the same reasoning — this is a
-    // WRITE to readBy, not a read of content, and every count that feeds a
-    // badge already excludes removed messages. Adding a filter here would also
-    // leave a removed-then-restored message permanently unread for a recipient
-    // who had the thread open the whole time, which is a worse outcome than a
-    // readBy entry nobody looks at.
+    // Unfiltered on purpose: marking an invisible message read is harmless and
+    // keeps readBy honest for future read receipts. The badge already excludes
+    // all three cases at the count.
     await Message.updateMany(
       { conversation: id, sender: { $ne: me }, readBy: { $ne: me } },
       { $addToSet: { readBy: me } },
