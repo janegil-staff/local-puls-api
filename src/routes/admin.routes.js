@@ -8,6 +8,9 @@ import {
   resolveReport,
   adminGetMessages,
   adminListHiddenMessages,
+  adminListRemovedMessages,
+  adminRemoveMessage,
+  adminRestoreMessage,
   listPosts as adminListPosts,
   deletePost as adminDeletePost,
 } from "../controllers/adminController.js";
@@ -65,6 +68,30 @@ router.get(
   requireAuth,
   requireModerator,
   adminListHiddenMessages,
+);
+
+// Messages a MODERATOR took down — "removed by moderators" in the admin UI.
+// Unlike hiding, removal modifies the document: the sender keeps a tombstone,
+// the recipient's thread loses the message entirely. Reversible, and
+// attributed to whoever did it. A message can be both hidden and removed;
+// restoring does not un-hide it for a participant who had also hidden it.
+router.get(
+  "/messages/removed",
+  requireAuth,
+  requireModerator,
+  adminListRemovedMessages,
+);
+router.post(
+  "/messages/:id/remove",
+  requireAuth,
+  requireModerator,
+  adminRemoveMessage,
+);
+router.post(
+  "/messages/:id/restore",
+  requireAuth,
+  requireModerator,
+  adminRestoreMessage,
 );
 
 // Full thread around a reported message, UNFILTERED by hiddenFor. A privileged
