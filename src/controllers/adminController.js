@@ -5,6 +5,9 @@ import Swipe from "../models/Swipe.js";
 import Post from "../models/Post.js";
 import Comment from "../models/Comment.js";
 import Report, { REPORT_STATUS } from "../models/Report.js";
+import mongoose from "mongoose";
+import Message from "../models/Message.js";
+import Conversation from "../models/Conversation.js";
 
 // Dashboard counters for the admin analytics view.
 export async function stats(_req, res) {
