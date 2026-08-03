@@ -495,18 +495,23 @@ export async function adminListRemovedMessages(req, res) {
 // returns the real message rather than an empty bubble, and a report about it
 // stays actionable.
 //
-// ASYMMETRIC by design. The sender sees a tombstone — removal that the sender
-// cannot perceive teaches nothing and deters nothing. The recipient's thread
-// filters the message out entirely: a "removed by a moderator" placeholder
-// would keep pointing at content they were better off not receiving, every
-// time they scroll past it.
+// SYMMETRIC. Neither participant sees the message afterwards — no tombstone
+// for the sender, no placeholder for the recipient. Both threads simply do not
+// contain it, because chatController excludes it at the query for everyone.
+//
+// The cost of that symmetry is worth knowing before you use this button: the
+// sender cannot perceive the removal, so it reads to them as a message that
+// failed to send, and the likeliest next thing they do is type it again.
+// Removal on its own teaches nothing and deters nothing.
+//
+// Which is why this is the WEAKEST tool here, and more so under symmetric
+// removal than it was before. If a message was bad enough to remove, the live
+// question is almost always whether the account should still be sending
+// messages at all — setBanned is above this in the same controller, and
+// removal without it is usually just the first move in a loop.
 //
 // Reversible on purpose. Moderators act on incomplete information and reports
 // are sometimes wrong; a one-way action makes a mistake permanent.
-//
-// Worth remembering this is the WEAKEST tool here. If a message was bad enough
-// to remove, the live question is usually whether the account should still be
-// sending messages at all — setBanned is above this in the same controller.
 export async function adminRemoveMessage(req, res) {
   try {
     const me = currentUserId(req);
@@ -552,10 +557,11 @@ export async function adminRemoveMessage(req, res) {
 
     const io = req.app.get("io");
     if (io) {
-      // Open threads. The payload carries no text — the client decides what to
-      // render from senderId, tombstone if it is theirs and a deletion if it
-      // is not. Putting the branch on the client is what keeps one event able
-      // to serve two different views.
+      // Open threads. senderId is still in the payload even though both
+      // clients now do the same thing with this event — drop the message —
+      // because it is the only field that would let a client branch again if
+      // the tombstone is ever reinstated, and removing it costs nothing to
+      // keep.
       io.to(`conversation:${msg.conversation}`).emit("chat:message:removed", {
         conversationId: String(msg.conversation),
         messageId: String(msg._id),

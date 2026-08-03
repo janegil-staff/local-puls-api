@@ -35,39 +35,60 @@
 // ── ADMIN REMOVAL — a THIRD visibility mechanism, distinct from both ──
 //
 // removedByAdmin: { by, at, reason } is set by adminRemoveMessage (see
-// adminController.js). Unlike hiding, it is not per-user and not symmetric:
+// adminController.js). Unlike hiding, it is global rather than per-user, and
+// SYMMETRIC: neither participant sees the message afterwards.
 //
-//   sender     → sees a TOMBSTONE. The message stays in their thread, marked
-//                as removed. toClient(viewerId) produces this.
-//   recipient  → sees NOTHING. The message is filtered out at the QUERY, so
-//                it is simply absent from their thread — no placeholder, no
-//                gap they can point at. A placeholder would re-expose them to
-//                the fact of the content, which is what removal is undoing.
+//   sender     → the message is gone from their thread. No tombstone, no
+//                marker, no gap.
+//   recipient  → same.
 //
-// That asymmetry is why the filter is not a flat exclusion. Every
-// participant-facing read either excludes removed messages outright (when it
-// already excludes the viewer's own messages anyway) or uses notRemovedFor(),
-// which keeps the sender's own removed messages so toClient can tombstone
-// them. Sites are marked REMOVED_FILTER below.
+// Both are filtered at the QUERY, so this is a flat exclusion in every
+// participant-facing read. Sites are marked REMOVED_FILTER below.
+//
+// AN EARLIER VERSION OF THIS FILE WAS ASYMMETRIC — the sender kept a tombstone
+// so that removal was perceptible to the person who caused it. That was
+// changed deliberately. The tradeoff is real and worth stating so it is not
+// re-litigated by whoever reads this next:
+//
+//   what symmetric removal buys   the sender cannot infer from a marker what
+//                                 was removed or when, and the recipient's
+//                                 thread has no shape suggesting something
+//                                 was taken out of it.
+//   what it costs                 a message that silently vanishes reads as a
+//                                 failed send, so the likeliest next action is
+//                                 that the sender types it again. Removal
+//                                 teaches nothing and deters nothing on its
+//                                 own; it has to be paired with banning the
+//                                 account, or it is a treadmill.
+//
+// The second point is not a reason to revert. It is a reason that
+// adminRemoveMessage should rarely be the ONLY action taken — setBanned is in
+// the same controller for exactly this case.
 //
 // The text is NEVER blanked in the database. That is what makes restore
 // return the real message instead of an empty bubble, and it is what keeps a
 // removed message meaningful in the moderation queue.
 //
+// toClient(viewerId) still takes a viewer, and Message.js may still contain a
+// tombstone branch for a removed message. NOTHING IN THIS FILE REACHES IT any
+// more — every participant read excludes removed messages before serialisation
+// — so that branch is dead code from the participant surface. Left in place
+// rather than stripped, because reinstating the tombstone is a one-line change
+// to the getMessages query while re-deriving the serializer is not.
+//
 // COUNTING is deliberately unfiltered by removal, in both places it happens:
 // the pending-request gate here and checkPendingRules in pendingGuard.js. If
 // an admin removed your one opening message, that must not hand you a fresh
-// one — the count is of what was SENT.
+// one — the count is of what was SENT. This matters MORE under symmetric
+// removal, not less: the sender cannot see that their message is gone, so
+// without this they would find themselves able to send into a stranger's
+// thread repeatedly with no idea why.
 //
 // KNOWN LEAK — Conversation.lastMessage. The inbox row preview is
-// denormalised onto the conversation by persistMessage and is NOT recomputed
-// when a message is removed, so a recipient can still see the removed text as
-// their row preview until someone sends again. This is tolerable for hiding
-// (the other side never lost anything) but it is NOT tolerable for admin
-// removal, which exists precisely to take that text away from them. The fix
-// belongs in adminRemoveMessage: recompute lastMessage/lastMessageAt from the
-// newest non-removed message in the conversation. Marked here so it is not
-// lost between the two files.
+// denormalised onto the conversation by persistMessage and is not recomputed
+// here; adminRemoveMessage calls recomputeConversationPreview for that. Under
+// symmetric removal this applies to BOTH participants — a stale preview would
+// show the removed text to the sender and the recipient alike.
 
 import mongoose from "mongoose";
 import Conversation, { buildPairKey } from "../models/Conversation.js";
@@ -79,23 +100,20 @@ function currentUserId(req) {
   return String(req.user.id || req.user.sub);
 }
 
-// Query fragment for participant-facing reads that must still return the
-// VIEWER'S OWN removed messages (so toClient can render a tombstone) while
-// excluding everyone else's.
+// Query fragment for every participant-facing read. Flat exclusion — removal
+// is symmetric, so no read here ever returns a removed message to anyone.
 //
 // Tests "removedByAdmin.at" rather than "removedByAdmin" because a Mongoose
 // subdocument path may be stored as an empty object rather than omitted
 // entirely — { removedByAdmin: { $exists: false } } would then match nothing
-// and every message in every thread would vanish for the recipient. The dotted
-// path is true in both shapes.
+// and every message in every thread would vanish for everyone. The dotted path
+// is true in both storage shapes.
 //
-// Pass a string for find(), a Types.ObjectId for aggregate() — aggregate does
-// not cast. Same trap as the hiddenFor/meId note in listConversations.
-function notRemovedFor(viewerId) {
-  return {
-    $or: [{ "removedByAdmin.at": { $exists: false } }, { sender: viewerId }],
-  };
-}
+// Written out at each site rather than shared through a helper, because there
+// are only three and a helper here previously encoded the sender exception
+// that symmetric removal removed. A constant that no longer means what its
+// name says is worse than three literal filters.
+const REMOVED_EXCLUSION = { "removedByAdmin.at": { $exists: false } };
 
 // Shared: persist a message + broadcast. Used by REST sendMessage.
 // Returns { ok, message } or { status, error } for the caller to respond with.
@@ -427,11 +445,10 @@ export async function listConversations(req, res) {
           // HIDDEN_FILTER 1 of 3 — a message I hid must not keep a row bolded
           // with a count I cannot clear by opening the thread.
           hiddenFor: { $ne: meId },
-          // REMOVED_FILTER 1 of 3 — flat exclusion, no notRemovedFor() needed:
-          // sender: { $ne: meId } above already means every message reaching
-          // this count came from the other party, and none of those are ever
-          // visible to me once removed. Same failure mode as the hidden case
-          // if omitted — a count for a message that is not in the thread.
+          // REMOVED_FILTER 1 of 3 — flat exclusion, like all three. Removal is
+          // symmetric, so nothing removed is ever counted for anyone. Same
+          // failure mode as the hidden case if omitted — a count for a message
+          // that is not in the thread.
           "removedByAdmin.at": { $exists: false },
         },
       },
@@ -636,19 +653,19 @@ export async function getMessages(req, res) {
     // reappears the moment the page reloads, which is the most obvious of the
     // three and still the easiest to forget.
     //
-    // REMOVED_FILTER 2 of 3 — and the ONE place notRemovedFor() is needed
-    // rather than a flat exclusion, because this is the only read that returns
-    // the viewer's own messages. The $or keeps my removed messages so
-    // toClient(me) can tombstone them, and drops the other party's so their
-    // removed message is absent rather than placeheld.
+    // REMOVED_FILTER 2 of 3 — flat, like the other two. This is the ONE read
+    // that returns the viewer's own messages, so it is the only place where
+    // the sender-exception used to live; under symmetric removal there is no
+    // exception and the sender loses their own message here exactly as the
+    // recipient does.
     //
-    // Spread, not assigned, so the $or survives if a later edit adds another
-    // clause. Nothing else in this query uses $or; if something ever does,
-    // both must move under an explicit $and or one will silently win.
+    // THIS LINE IS THE WHOLE BEHAVIOUR. Reinstating the tombstone means
+    // changing this one filter back to an $or on { sender: me } and nothing
+    // else — the serializer in Message.js can still render it.
     const query = {
       conversation: id,
       hiddenFor: { $ne: me },
-      ...notRemovedFor(me),
+      ...REMOVED_EXCLUSION,
     };
     if (before) query.createdAt = { $lt: new Date(before) };
 
@@ -657,12 +674,9 @@ export async function getMessages(req, res) {
       .limit(Math.min(Number(limit) || 50, 100))
       .populate("sender");
 
-    // toClient(me) — the viewer argument is what turns a removed message into
-    // a tombstone instead of returning its text. A bare toClient() here is the
-    // single highest-consequence typo in this file: the recipient's own
-    // removed messages are already gone at the query, but the SENDER would get
-    // their real text back with no removal marker, and the admin action would
-    // look like it silently failed.
+    // toClient(me) — the viewer argument no longer changes the output for
+    // removed messages, because none reach here. Kept because Message.js takes
+    // it and because it is the hook the tombstone would hang from again.
     const messages = docs.reverse().map((m) => m.toClient(me));
 
     // Whether this user may send right now, so the input can be disabled
