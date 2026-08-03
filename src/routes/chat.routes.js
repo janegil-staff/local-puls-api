@@ -8,7 +8,9 @@ import {
   getMessages,
   sendMessage,
   hideMessage,
+  unhideMessage,
   retractMessage,
+  unretractMessage,
   reportMessage,
   chatUnreadCount,
   markRead,
@@ -40,16 +42,24 @@ router.post("/conversations/:id/read", requireAuth, markRead);
 // controller resolves the conversation itself for the membership check, so
 // passing it twice would only create a chance to disagree.
 //
-// hide    = the OTHER party's message, gone for me only, irreversible
-// retract = MY message, gone for both, no time limit, blocked once reported
-// report  = to the moderation queue
+//   hide / unhide       the OTHER party's message, my view only. Unhide has no
+//                       time limit: hiding never affected them, so restoring
+//                       it cannot surprise anyone.
+//   retract / unretract MY message, gone for both. Retraction has no time
+//                       limit but is blocked once the message is reported;
+//                       UNDO is capped at 30s, because past that the message
+//                       reappears buried in someone else's thread at its
+//                       original timestamp.
+//   report              to the moderation queue.
 //
-// No validate(): hide and retract have no body, and report's `reason` is an
-// enum, which this validate() DSL cannot express — reportMessage checks it
-// against REPORT_REASONS and returns 400 rather than letting an unknown value
-// reach Mongoose as a 500.
+// No validate(): none of these has a body except report, whose `reason` is an
+// enum this validate() DSL cannot express — reportMessage checks it against
+// REPORT_REASONS and returns 400 rather than letting an unknown value reach
+// Mongoose as a 500.
 router.post("/messages/:id/hide", requireAuth, hideMessage);
+router.post("/messages/:id/unhide", requireAuth, unhideMessage);
 router.post("/messages/:id/retract", requireAuth, retractMessage);
+router.post("/messages/:id/unretract", requireAuth, unretractMessage);
 router.post("/messages/:id/report", requireAuth, reportMessage);
 
 export default router;

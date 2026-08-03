@@ -696,3 +696,112 @@ export async function markRead(req, res) {
     return res.status(500).json({ error: "Failed to mark read" });
   }
 }
+
+//
+// ⚠ PARTIAL — TWO NEW FUNCTIONS. Do not paste this file over
+// chatController.js and do not paste this header into it. Copy the two
+// functions below and add them after retractMessage.
+//
+// Purely additive: neither changes an existing read, because both work by
+// clearing the flag the reads already filter on. Nothing else needs touching.
+//
+// findMessageForParticipant, currentUserId and Message are all already in the
+// file. Add RETRACT_UNDO_MS near the top with the other module constants.
+
+// A retracted message can be restored only inside this window. Not a
+// formality: the message goes back into the OTHER person's thread at its
+// original timestamp. Within half a minute they almost certainly have not
+// looked. A day later it would reappear buried mid-conversation, where they
+// either never see it — making the undo pointless — or see it and have no way
+// to understand why a message they never received is suddenly there, dated
+// yesterday.
+const RETRACT_UNDO_MS = 30 * 1000;
+
+// ── Undo a hide — restores the message to MY view only ────────────────
+//
+// NO time limit, deliberately, and the asymmetry with unretract is the point:
+// hiding never affected the other participant, so restoring it cannot surprise
+// anyone. There is nothing to protect against, so there is nothing to
+// restrict.
+//
+// Idempotent via $pull: unhiding something not hidden is a no-op.
+//
+// Reachable only from the undo toast in the thread, because nothing lists what
+// you have hidden. If a "hidden messages" screen ever exists for the user,
+// this endpoint is already what it would call.
+export async function unhideMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const found = await findMessageForParticipant(req.params.id, me);
+    if (found.error)
+      return res.status(found.status).json({ error: found.error });
+
+    await Message.updateOne(
+      { _id: found.msg._id },
+      { $pull: { hiddenFor: me } },
+    );
+
+    return res.json({ ok: true, messageId: String(found.msg._id) });
+  } catch (err) {
+    console.error("[unhideMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to restore message" });
+  }
+}
+
+// ── Undo a retraction — restores it for BOTH parties ──────────────────
+//
+// Sender only, and only inside RETRACT_UNDO_MS. Past the window the answer is
+// a plain 409 with a translation key rather than a silent failure, so the
+// client can say why.
+//
+// $unset rather than a flag set back to false, so the absence of retractedAt
+// stays the single presence test every read relies on.
+//
+// The socket event matters more here than elsewhere: the recipient's client
+// dropped this message when it was retracted and has no other way to learn it
+// exists again.
+export async function unretractMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const found = await findMessageForParticipant(req.params.id, me);
+    if (found.error)
+      return res.status(found.status).json({ error: found.error });
+
+    const msg = found.msg;
+
+    if (String(msg.sender) !== me) {
+      return res.status(403).json({ error: "Not your message" });
+    }
+
+    // Already visible — treat as success, not an error. A double-tap on Undo
+    // is a double-tap, and the end state is the one the user wanted.
+    if (!msg.retractedAt) {
+      return res.json({ ok: true, messageId: String(msg._id), already: true });
+    }
+
+    const age = Date.now() - new Date(msg.retractedAt).getTime();
+    if (age > RETRACT_UNDO_MS) {
+      return res.status(409).json({ error: "chatUndoWindowClosed" });
+    }
+
+    await Message.updateOne({ _id: msg._id }, { $unset: { retractedAt: "" } });
+
+    // Both threads get it back live. Without this the recipient would need a
+    // reload to see a message their client already discarded.
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`conversation:${msg.conversation}`).emit(
+        "chat:message:unretracted",
+        {
+          conversationId: String(msg.conversation),
+          messageId: String(msg._id),
+        },
+      );
+    }
+
+    return res.json({ ok: true, messageId: String(msg._id) });
+  } catch (err) {
+    console.error("[unretractMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to restore message" });
+  }
+}
