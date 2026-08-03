@@ -23,8 +23,11 @@ router.delete("/posts/:id", requireAuth, requireAdmin, adminDeletePost);
 router.get("/reports", requireAuth, requireAdmin, listReports);
 router.patch("/reports/:id", requireAuth, requireAdmin, resolveReport);
 
-// Full thread around a reported message, unfiltered by hiddenFor. This is a
-// privileged read of a private conversation — requireAdmin is the only gate,
+// Full thread around a reported message, UNFILTERED by hiddenFor — this is the
+// one read path that returns messages a participant has "deleted for me",
+// because hiding is a per-user array that never touches the document.
+//
+// A privileged read of a private conversation: requireAdmin is the only gate,
 // and there is deliberately no participant check, because a moderator cannot
 // judge one line without what surrounds it.
 //

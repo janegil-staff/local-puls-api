@@ -99,35 +99,6 @@ export async function setBanned(req, res) {
   }
 }
 
-// ── Reports moderation ────────────────────────────────
-export async function listReports(req, res) {
-  try {
-    const { status } = req.query;
-    const filter = status && REPORT_STATUS.includes(status) ? { status } : {};
-    const reports = await Report.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(100)
-      .populate("reporter")
-      .populate("post")
-      .populate("reportedUser");
-    return res.json({
-      reports: reports.map((r) => ({
-        id: r._id,
-        reason: r.reason,
-        note: r.note,
-        status: r.status,
-        reporter: r.reporter?.toPublic?.(),
-        post: r.post ? { id: r.post._id, text: r.post.text } : null,
-        reportedUser: r.reportedUser?.toPublic?.() || null,
-        createdAt: r.createdAt,
-      })),
-    });
-  } catch (err) {
-    console.error("listReports error", err);
-    return res.status(500).json({ error: "Could not load reports" });
-  }
-}
-
 export async function resolveReport(req, res) {
   try {
     const { status } = req.body;
