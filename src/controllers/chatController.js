@@ -212,10 +212,11 @@ export async function hideMessage(req, res) {
     if (found.error)
       return res.status(found.status).json({ error: found.error });
 
-    await Message.updateOne(
+    const r = await Message.updateOne(
       { _id: found.msg._id },
       { $addToSet: { hiddenFor: me } },
     );
+    console.log("[hideMessage]", String(found.msg._id), me, r.modifiedCount);
 
     return res.json({ ok: true, messageId: String(found.msg._id) });
   } catch (err) {
