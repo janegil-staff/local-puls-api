@@ -11,6 +11,11 @@ import {
   listPosts as adminListPosts,
   deletePost as adminDeletePost,
 } from "../controllers/adminController.js";
+import {
+  setUserRole,
+  listRoleChanges,
+  listAllRoleChanges,
+} from "../controllers/adminRolesController.js";
 import { requireAuth } from "../middleware/auth.js";
 import { requireAdmin } from "../middleware/requireAdmin.js";
 
@@ -19,6 +24,19 @@ const router = Router();
 router.get("/stats", requireAuth, requireAdmin, stats);
 router.get("/users", requireAuth, requireAdmin, listUsers);
 router.patch("/users/:id/ban", requireAuth, requireAdmin, setBanned);
+
+// Role changes live in their own controller. requireAdmin already re-reads
+// role from the database on every request, so a demotion applies to the
+// target's next request rather than waiting for their JWT to expire.
+router.patch("/users/:id/role", requireAuth, requireAdmin, setUserRole);
+router.get(
+  "/users/:id/role-history",
+  requireAuth,
+  requireAdmin,
+  listRoleChanges,
+);
+router.get("/role-changes", requireAuth, requireAdmin, listAllRoleChanges);
+
 router.get("/posts", requireAuth, requireAdmin, adminListPosts);
 router.delete("/posts/:id", requireAuth, requireAdmin, adminDeletePost);
 router.get("/reports", requireAuth, requireAdmin, listReports);

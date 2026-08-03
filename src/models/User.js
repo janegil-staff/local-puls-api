@@ -67,7 +67,11 @@ const userSchema = new mongoose.Schema(
     bio: { type: String, maxlength: 300, default: "" },
     language: { type: String, default: "en" }, // UI language: no/en/nl/fr/de/it/sv/da/fi/es/pl/pt
 
-    role: { type: String, enum: ["user", "admin"], default: "user" },
+    role: {
+      type: String,
+      enum: ["user", "admin", "moderator"],
+      default: "user",
+    },
     banned: { type: Boolean, default: false },
     pushTokens: [{ type: String }],
 
