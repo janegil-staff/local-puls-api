@@ -278,3 +278,66 @@ export async function adminGetMessages(req, res) {
     return res.status(500).json({ error: "Could not load conversation" });
   }
 }
+
+// localpulse/server/src/controllers/adminController.js
+//
+// ⚠⚠ PARTIAL FILE — ONE FUNCTION. Do NOT paste this whole file over
+// adminController.js, and do NOT paste this header block into it either. Copy
+// the function below only, and add it after adminGetMessages.
+//
+// (The header from the last partial ended up inside your controller as source,
+// along with a duplicate listReports. Worth deleting lines ~185–195 while you
+// are in here.)
+//
+// Requires the imports the previous partial listed — mongoose, Message,
+// Conversation — which as of the last grep were still missing:
+//
+//   import mongoose from "mongoose";
+//   import Message from "../models/Message.js";
+//   import Conversation from "../models/Conversation.js";
+
+// ── Messages hidden by a participant ──────────────────────────────────
+//
+// "Deleted messages" in the admin UI. Hiding sets hiddenFor; it never modifies
+// or removes the document, so the original text is returned intact.
+//
+// `hiddenFor.0` existing is the cheapest non-empty-array test Mongo offers and
+// uses the { conversation, hiddenFor } index. $size: { $gt: 0 } is not valid
+// and $expr would force a collection scan.
+//
+// hiddenByUsers is populated because WHO hid it is the only part with any
+// interpretive value — a recipient hiding something they were sent reads very
+// differently from a sender tidying up after themselves. Neither is evidence
+// of anything on its own; most hiding is ordinary housekeeping.
+//
+// No report anchors these reads, unlike adminGetMessages. If that ever becomes
+// uncomfortable, the honest fix is to drop the page rather than to soften it.
+export async function adminListHiddenMessages(req, res) {
+  try {
+    const lim = Math.min(Number(req.query.limit) || 100, 200);
+
+    const docs = await Message.find({ "hiddenFor.0": { $exists: true } })
+      .sort({ createdAt: -1 })
+      .limit(lim)
+      .populate("sender")
+      .populate("hiddenFor");
+
+    return res.json({
+      messages: docs.map((m) => ({
+        id: String(m._id),
+        conversationId: String(m.conversation),
+        sender: m.sender?.toPublic?.() || null,
+        text: m.text || "",
+        ...(m.imageUrl ? { imageUrl: m.imageUrl } : {}),
+        hiddenCount: (m.hiddenFor || []).length,
+        hiddenByUsers: (m.hiddenFor || [])
+          .map((u) => u?.toPublic?.() || null)
+          .filter(Boolean),
+        createdAt: m.createdAt,
+      })),
+    });
+  } catch (err) {
+    console.error("adminListHiddenMessages error", err);
+    return res.status(500).json({ error: "Could not load hidden messages" });
+  }
+}
