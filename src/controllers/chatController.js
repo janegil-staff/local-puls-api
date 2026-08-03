@@ -7,7 +7,8 @@
 //
 // Conversation: { participants[], pairKey, status: 'pending'|'accepted',
 //                 initiator, lastMessage: String, lastMessageAt }
-// Message:      { conversation, sender, text?, imageUrl?, readBy[] } + toClient()
+// Message:      { conversation, sender, text?, imageUrl?, readBy[], hiddenFor[] }
+//               + toClient() / toAdmin()
 //
 // MESSAGE REQUESTS: a stranger gets ONE message before the recipient has
 // accepted. Enforced in persistMessage via lib/pendingGuard.js, so both the
@@ -16,6 +17,13 @@
 // This gate was removed at one point and the logs showed the consequence
 // immediately: two consecutive sends into a pending thread, both 201. Without
 // it, "message requests" is a label on a screen rather than a protection.
+//
+// HIDING (hideMessage) is per-user and additive: a user's id goes into the
+// message's hiddenFor array and every participant-facing READ filters on it.
+// It is NOT a retraction — the other side still sees the message, and the
+// document is never modified or removed, so moderation keeps the record. Three
+// read paths filter, and all three are marked HIDDEN_FILTER below. Miss one
+// and a hidden message returns through a side door.
 
 import mongoose from "mongoose";
 import Conversation, { buildPairKey } from "../models/Conversation.js";
@@ -60,6 +68,14 @@ async function persistMessage({
   // conversation and lets the reply through. Removing this without also
   // handling the recipient in the guard leaves the thread deadlocked: the
   // initiator is out of messages and the recipient never accepted.
+  //
+  // NOTE this makes the recipient branch of checkPendingRules unreachable
+  // from here — the guard returns chatPendingRecipient for a recipient, but a
+  // recipient never arrives at it still pending. Same for pendingState(),
+  // whose recipient answer (canSend: false) contradicts what actually happens.
+  // getMessages below therefore computes canSend inline rather than calling
+  // pendingState, and the divergence is worth resolving in pendingGuard.js
+  // before anything else starts calling it.
   if (isRecipient) {
     convo.status = "accepted";
     await convo.save();
@@ -107,12 +123,37 @@ async function persistMessage({
 
   return { ok: true, message: payload };
 }
-// localpulse/server/src/controllers/chatController.js
-//
-// ADDITIONS ONLY — paste the function in, then apply the three filter edits
-// below. mongoose, Conversation, Message and currentUserId are all already
-// imported/defined at the top of this file (lines 20–26), so nothing new is
-// needed there.
+
+// ── Send a message (REST) — THE persistence path for web + mobile ─────
+export async function sendMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const { id } = req.params;
+    const { text, imageUrl } = req.body;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: "Invalid conversation id" });
+    }
+    if (!text?.trim() && !imageUrl) {
+      return res.status(400).json({ error: "Message is empty" });
+    }
+
+    const result = await persistMessage({
+      req,
+      conversationId: id,
+      senderId: me,
+      text,
+      imageUrl,
+    });
+    if (result.error)
+      return res.status(result.status).json({ error: result.error });
+
+    return res.status(201).json({ message: result.message });
+  } catch (err) {
+    console.error("[sendMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to send message" });
+  }
+}
 
 // ── Hide a single message for the calling user ────────────────────────
 //
@@ -161,63 +202,6 @@ export async function hideMessage(req, res) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// READ FILTERS — three places, all required
-// ─────────────────────────────────────────────────────────────────────
-//
-// Miss one and a hidden message comes back through a side door. In each of the
-// Message queries below, add:
-//
-//     hiddenFor: { $ne: me },
-//
-// 1. getMessages() — line ~333. The Message.find({ conversation: id, ... }).
-//    Without it the message reappears on reload.
-//
-// 2. chatUnreadCount() — line ~418, the countDocuments over accepted convos
-//    that already filters `sender: { $ne: me }, readBy: { $ne: me }`. Without
-//    it the ✉ badge shows a count for a message the user cannot find, which
-//    reads as a broken badge. This is the one people forget.
-//
-// 3. listConversations() — wherever lastMessage / the inbox preview is
-//    resolved. I have not seen it, so I cannot write the edit: if it is a
-//    populate or a per-convo findOne, add the same filter; if it is an
-//    aggregation, the $match on messages needs `hiddenFor: { $ne: meObjectId }`
-//    with a real ObjectId rather than the string currentUserId() returns.
-//
-// ADMIN read paths must NOT filter, and get the full record automatically as
-// long as they do not copy this. Use message.toAdmin() there — it returns the
-// original text plus hiddenFor, so a moderator sees what was actually sent.
-// ── Send a message (REST) — THE persistence path for web + mobile ─────
-export async function sendMessage(req, res) {
-  try {
-    const me = currentUserId(req);
-    const { id } = req.params;
-    const { text, imageUrl } = req.body;
-
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ error: "Invalid conversation id" });
-    }
-    if (!text?.trim() && !imageUrl) {
-      return res.status(400).json({ error: "Message is empty" });
-    }
-
-    const result = await persistMessage({
-      req,
-      conversationId: id,
-      senderId: me,
-      text,
-      imageUrl,
-    });
-    if (result.error)
-      return res.status(result.status).json({ error: result.error });
-
-    return res.status(201).json({ message: result.message });
-  } catch (err) {
-    console.error("[sendMessage] failed:", err);
-    return res.status(500).json({ error: "Failed to send message" });
-  }
-}
-
 // ── Accepted conversations, with a per-conversation unread count ──────
 //
 // The client's Row renders `convo.unread`, so it has to be supplied here.
@@ -241,7 +225,8 @@ export async function listConversations(req, res) {
     // Cast explicitly: aggregate does NOT run values through the schema, so a
     // raw string here silently matches nothing and every count comes back
     // zero. countDocuments elsewhere in this file gets away with a string
-    // because Mongoose casts it — aggregate does not.
+    // because Mongoose casts it — aggregate does not. The same applies to the
+    // hiddenFor filter below, which is why it uses meId and not me.
     const meId = new mongoose.Types.ObjectId(me);
 
     const unreadAgg = await Message.aggregate([
@@ -250,6 +235,9 @@ export async function listConversations(req, res) {
           conversation: { $in: ids },
           sender: { $ne: meId },
           readBy: { $ne: meId },
+          // HIDDEN_FILTER 1 of 3 — a message I hid must not keep a row bolded
+          // with a count I cannot clear by opening the thread.
+          hiddenFor: { $ne: meId },
         },
       },
       { $group: { _id: "$conversation", n: { $sum: 1 } } },
@@ -261,6 +249,12 @@ export async function listConversations(req, res) {
       return {
         id: String(c._id),
         status: c.status,
+        // KNOWN LIMITATION: lastMessage is denormalised onto the conversation
+        // by persistMessage, so hiding the newest message does NOT change this
+        // preview — the inbox row still shows its text until someone sends
+        // again. Fixing it properly means resolving the newest non-hidden
+        // message per conversation, which is a second aggregate over the whole
+        // list. Left as-is deliberately; revisit if it bothers anyone.
         lastMessage: c.lastMessage,
         lastMessageAt: c.lastMessageAt,
         unread: unreadByConvo.get(String(c._id)) || 0,
@@ -431,7 +425,10 @@ export async function getMessages(req, res) {
     const other = convo.participants.find((p) => String(p._id) !== me);
     const otherUser = other ? other.toPublic() : null;
 
-    const query = { conversation: id };
+    // HIDDEN_FILTER 2 of 3 — the thread itself. Without this the message
+    // reappears the moment the page reloads, which is the most obvious of the
+    // three and still the easiest to forget.
+    const query = { conversation: id, hiddenFor: { $ne: me } };
     if (before) query.createdAt = { $lt: new Date(before) };
 
     const docs = await Message.find(query)
@@ -445,6 +442,15 @@ export async function getMessages(req, res) {
     // BEFORE they type rather than after the send is rejected. Only the
     // initiator of a still-pending thread is ever limited — a recipient
     // replying accepts the conversation, so they always can.
+    //
+    // Computed inline rather than via pendingState() from pendingGuard.js:
+    // that helper answers canSend: false for a recipient, which contradicts
+    // the auto-accept in persistMessage. Reconcile the two before switching.
+    //
+    // DELIBERATELY NOT filtered by hiddenFor. Hiding your own opening message
+    // must not buy you another one — the count is of what was SENT, not of
+    // what you can still see. checkPendingRules counts the same way, so the
+    // client's view and the server's gate agree.
     const isInitiator = String(convo.initiator) === me;
     let canSend = true;
     let sendBlockedReason = null;
@@ -502,9 +508,19 @@ export async function chatUnreadCount(req, res) {
       // inflate the badge.
       sender: { $ne: me },
       readBy: { $ne: me },
+      // HIDDEN_FILTER 3 of 3 — the one people forget. Without it the ✉ badge
+      // shows a count for a message the user cannot find anywhere, and no
+      // amount of opening threads clears it. Reads as a broken badge.
+      hiddenFor: { $ne: me },
     });
 
     // Incoming requests awaiting this user's approval.
+    //
+    // Counts CONVERSATIONS, not messages, so a request with no message yet
+    // still lights the badge. openConversation creates the thread the moment
+    // someone presses Message on a profile, which means an abandoned tap
+    // leaves a permanent empty request in the recipient's list. Worth making
+    // creation lazy — on first send — or excluding zero-message threads here.
     const requestCount = await Conversation.countDocuments({
       participants: me,
       status: "pending",
@@ -535,6 +551,9 @@ export async function markRead(req, res) {
       return res.status(403).json({ error: "Not a participant" });
     }
 
+    // Not filtered by hiddenFor: marking a hidden message read is harmless and
+    // keeps readBy honest for the sender's future read receipts, if those ever
+    // land. The badge already excludes hidden messages at the count.
     await Message.updateMany(
       { conversation: id, sender: { $ne: me }, readBy: { $ne: me } },
       { $addToSet: { readBy: me } },
