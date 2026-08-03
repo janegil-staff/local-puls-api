@@ -7,8 +7,9 @@
 //
 // Conversation: { participants[], pairKey, status: 'pending'|'accepted',
 //                 initiator, lastMessage: String, lastMessageAt }
-// Message:      { conversation, sender, text?, imageUrl?, readBy[], hiddenFor[] }
-//               + toClient() / toAdmin()
+// Message:      { conversation, sender, text?, imageUrl?, readBy[], hiddenFor[],
+//                 removedByAdmin?: { by, at, reason } }
+//               + toClient(viewerId) / toAdmin()
 //
 // MESSAGE REQUESTS: a stranger gets ONE message before the recipient has
 // accepted. Enforced in persistMessage via lib/pendingGuard.js, so both the
@@ -30,6 +31,43 @@
 // still reportable by the OTHER party, who never lost their copy, and a
 // reported message is untouched by anyone hiding it since hiding never
 // modifies the document.
+//
+// ── ADMIN REMOVAL — a THIRD visibility mechanism, distinct from both ──
+//
+// removedByAdmin: { by, at, reason } is set by adminRemoveMessage (see
+// adminController.js). Unlike hiding, it is not per-user and not symmetric:
+//
+//   sender     → sees a TOMBSTONE. The message stays in their thread, marked
+//                as removed. toClient(viewerId) produces this.
+//   recipient  → sees NOTHING. The message is filtered out at the QUERY, so
+//                it is simply absent from their thread — no placeholder, no
+//                gap they can point at. A placeholder would re-expose them to
+//                the fact of the content, which is what removal is undoing.
+//
+// That asymmetry is why the filter is not a flat exclusion. Every
+// participant-facing read either excludes removed messages outright (when it
+// already excludes the viewer's own messages anyway) or uses notRemovedFor(),
+// which keeps the sender's own removed messages so toClient can tombstone
+// them. Sites are marked REMOVED_FILTER below.
+//
+// The text is NEVER blanked in the database. That is what makes restore
+// return the real message instead of an empty bubble, and it is what keeps a
+// removed message meaningful in the moderation queue.
+//
+// COUNTING is deliberately unfiltered by removal, in both places it happens:
+// the pending-request gate here and checkPendingRules in pendingGuard.js. If
+// an admin removed your one opening message, that must not hand you a fresh
+// one — the count is of what was SENT.
+//
+// KNOWN LEAK — Conversation.lastMessage. The inbox row preview is
+// denormalised onto the conversation by persistMessage and is NOT recomputed
+// when a message is removed, so a recipient can still see the removed text as
+// their row preview until someone sends again. This is tolerable for hiding
+// (the other side never lost anything) but it is NOT tolerable for admin
+// removal, which exists precisely to take that text away from them. The fix
+// belongs in adminRemoveMessage: recompute lastMessage/lastMessageAt from the
+// newest non-removed message in the conversation. Marked here so it is not
+// lost between the two files.
 
 import mongoose from "mongoose";
 import Conversation, { buildPairKey } from "../models/Conversation.js";
@@ -39,6 +77,24 @@ import { checkPendingRules } from "../lib/pendingGuard.js";
 
 function currentUserId(req) {
   return String(req.user.id || req.user.sub);
+}
+
+// Query fragment for participant-facing reads that must still return the
+// VIEWER'S OWN removed messages (so toClient can render a tombstone) while
+// excluding everyone else's.
+//
+// Tests "removedByAdmin.at" rather than "removedByAdmin" because a Mongoose
+// subdocument path may be stored as an empty object rather than omitted
+// entirely — { removedByAdmin: { $exists: false } } would then match nothing
+// and every message in every thread would vanish for the recipient. The dotted
+// path is true in both shapes.
+//
+// Pass a string for find(), a Types.ObjectId for aggregate() — aggregate does
+// not cast. Same trap as the hiddenFor/meId note in listConversations.
+function notRemovedFor(viewerId) {
+  return {
+    $or: [{ "removedByAdmin.at": { $exists: false } }, { sender: viewerId }],
+  };
 }
 
 // Shared: persist a message + broadcast. Used by REST sendMessage.
@@ -113,9 +169,20 @@ async function persistMessage({
   await convo.save();
 
   await message.populate("sender");
-  const payload = message.toClient();
+
+  // A just-created message can never be removed, so the viewer argument is
+  // immaterial here — but it is passed anyway so that every toClient call site
+  // in this file has one. A call with no viewer is the shape that silently
+  // leaks a removed message's text, and the way to never write one is to never
+  // leave an example of one lying around.
+  const payload = message.toClient(senderId);
 
   // Broadcast live to anyone in the conversation room + notify the other side.
+  //
+  // ONE payload to the whole room, which is only safe because the message is
+  // new. Do NOT copy this shape for removal/restore events: those need a
+  // per-participant payload, since the sender gets a tombstone and the
+  // recipient gets a deletion. adminController emits per-user for that reason.
   const io = req.app.get("io");
   if (io) {
     io.to(`conversation:${convo._id}`).emit("chat:message", payload);
@@ -169,13 +236,22 @@ export async function sendMessage(req, res) {
 // message that exists and 404 for one that does not, which leaks existence.
 // Both branches return before revealing any content, and the ids are random
 // ObjectIds, so the leak is not worth an extra query to close.
+//
+// NOT filtered by removedByAdmin, and the select now pulls it so callers can
+// decide for themselves. A recipient cannot normally reach a removed message
+// — it is absent from their thread — but a stale id from before the removal
+// could still arrive here, and neither action it feeds is harmful on one:
+// hiding is a no-op on something already invisible, and reporting something a
+// moderator has already acted on costs a queue row, not a leak. The 404 that
+// a filter here would produce is strictly worse: it would tell the recipient
+// that the message existed and then stopped existing.
 async function findMessageForParticipant(messageId, userId) {
   if (!mongoose.isValidObjectId(messageId)) {
     return { status: 400, error: "Invalid message id" };
   }
 
   const msg = await Message.findById(messageId).select(
-    "_id conversation sender text imageUrl",
+    "_id conversation sender text imageUrl removedByAdmin",
   );
   if (!msg) return { status: 404, error: "Message not found" };
 
@@ -205,6 +281,11 @@ async function findMessageForParticipant(messageId, userId) {
 // There is NO unhide endpoint. Adding one without a UI listing what you have
 // hidden would make it unreachable, and the client confirms before calling
 // this because of that.
+//
+// Hiding your own tombstone is allowed and works: hiddenFor is checked before
+// the removal filter in every read, so a sender who does not want to look at
+// the marker can put it away. Restore will not bring it back for them, which
+// is correct — that is their own hide, not the admin's removal.
 export async function hideMessage(req, res) {
   try {
     const me = currentUserId(req);
@@ -236,6 +317,10 @@ export async function hideMessage(req, res) {
 // a moderator needs the text as it was reported, and needs the thread around
 // it, because one line lifted out of a conversation is usually unjudgeable.
 //
+// snapshotText survives admin removal for the same reason restore does: the
+// text is never blanked in the database. A report filed before a removal, and
+// the removal itself, therefore do not fight over the same field.
+//
 // reportedUser is set to the sender so the queue's group-by-user view picks
 // message reports up without any change to its existing queries.
 //
@@ -266,7 +351,9 @@ export async function reportMessage(req, res) {
     const msg = found.msg;
 
     // Reporting your own message is meaningless and would put a moderator's
-    // time on a complaint with no counterparty.
+    // time on a complaint with no counterparty. This also means a sender
+    // cannot report their own tombstone, which is the right outcome — the
+    // route for disputing a removal is an appeal, not the abuse queue.
     if (String(msg.sender) === me) {
       return res.status(400).json({ error: "Cannot report your own message" });
     }
@@ -340,6 +427,12 @@ export async function listConversations(req, res) {
           // HIDDEN_FILTER 1 of 3 — a message I hid must not keep a row bolded
           // with a count I cannot clear by opening the thread.
           hiddenFor: { $ne: meId },
+          // REMOVED_FILTER 1 of 3 — flat exclusion, no notRemovedFor() needed:
+          // sender: { $ne: meId } above already means every message reaching
+          // this count came from the other party, and none of those are ever
+          // visible to me once removed. Same failure mode as the hidden case
+          // if omitted — a count for a message that is not in the thread.
+          "removedByAdmin.at": { $exists: false },
         },
       },
       { $group: { _id: "$conversation", n: { $sum: 1 } } },
@@ -357,6 +450,13 @@ export async function listConversations(req, res) {
         // again. Fixing it properly means resolving the newest non-hidden
         // message per conversation, which is a second aggregate over the whole
         // list. Left as-is deliberately; revisit if it bothers anyone.
+        //
+        // ADMIN REMOVAL MAKES THIS WORSE, and not tolerably so. The recipient
+        // is supposed to lose the content entirely, and this row hands it back
+        // to them. Unlike the hiding case it cannot be waved off as cosmetic.
+        // Fix belongs in adminRemoveMessage — recompute lastMessage from the
+        // newest non-removed message — NOT here, where it would cost a second
+        // aggregate on every inbox load to paper over a write-time omission.
         lastMessage: c.lastMessage,
         lastMessageAt: c.lastMessageAt,
         unread: unreadByConvo.get(String(c._id)) || 0,
@@ -388,6 +488,11 @@ export async function listRequests(req, res) {
       const other = (c.participants || []).find((p) => String(p._id) !== me);
       return {
         id: String(c._id),
+        // Same lastMessage caveat as listConversations, and it bites harder
+        // here: a request row IS the removed message, since a pending thread
+        // usually holds exactly one. Recomputing on removal leaves this row
+        // showing an empty preview, which is the correct outcome — the thread
+        // has nothing in it the recipient may see.
         lastMessage: c.lastMessage,
         lastMessageAt: c.lastMessageAt,
         otherUser: other ? other.toPublic() : null,
@@ -530,7 +635,21 @@ export async function getMessages(req, res) {
     // HIDDEN_FILTER 2 of 3 — the thread itself. Without this the message
     // reappears the moment the page reloads, which is the most obvious of the
     // three and still the easiest to forget.
-    const query = { conversation: id, hiddenFor: { $ne: me } };
+    //
+    // REMOVED_FILTER 2 of 3 — and the ONE place notRemovedFor() is needed
+    // rather than a flat exclusion, because this is the only read that returns
+    // the viewer's own messages. The $or keeps my removed messages so
+    // toClient(me) can tombstone them, and drops the other party's so their
+    // removed message is absent rather than placeheld.
+    //
+    // Spread, not assigned, so the $or survives if a later edit adds another
+    // clause. Nothing else in this query uses $or; if something ever does,
+    // both must move under an explicit $and or one will silently win.
+    const query = {
+      conversation: id,
+      hiddenFor: { $ne: me },
+      ...notRemovedFor(me),
+    };
     if (before) query.createdAt = { $lt: new Date(before) };
 
     const docs = await Message.find(query)
@@ -538,7 +657,13 @@ export async function getMessages(req, res) {
       .limit(Math.min(Number(limit) || 50, 100))
       .populate("sender");
 
-    const messages = docs.reverse().map((m) => m.toClient());
+    // toClient(me) — the viewer argument is what turns a removed message into
+    // a tombstone instead of returning its text. A bare toClient() here is the
+    // single highest-consequence typo in this file: the recipient's own
+    // removed messages are already gone at the query, but the SENDER would get
+    // their real text back with no removal marker, and the admin action would
+    // look like it silently failed.
+    const messages = docs.reverse().map((m) => m.toClient(me));
 
     // Whether this user may send right now, so the input can be disabled
     // BEFORE they type rather than after the send is rejected. Only the
@@ -553,6 +678,14 @@ export async function getMessages(req, res) {
     // must not buy you another one — the count is of what was SENT, not of
     // what you can still see. checkPendingRules counts the same way, so the
     // client's view and the server's gate agree.
+    //
+    // DELIBERATELY NOT filtered by removedByAdmin either, and for a stronger
+    // reason. Excluding removed messages here would mean that having your
+    // opening message removed for abuse resets your one-message allowance and
+    // lets you send into the same stranger's thread again. checkPendingRules
+    // counts unfiltered too; if either side ever starts filtering, the client
+    // will offer a send the server then rejects, or worse, the server will
+    // allow one the client never showed.
     const isInitiator = String(convo.initiator) === me;
     let canSend = true;
     let sendBlockedReason = null;
@@ -614,6 +747,12 @@ export async function chatUnreadCount(req, res) {
       // shows a count for a message the user cannot find anywhere, and no
       // amount of opening threads clears it. Reads as a broken badge.
       hiddenFor: { $ne: me },
+      // REMOVED_FILTER 3 of 3 — flat exclusion again, for the same reason as
+      // the aggregate: sender: { $ne: me } means nothing counted here is ever
+      // mine. This one is worse than the hidden case when missed, because an
+      // admin removal is not something the user did — they get a permanent
+      // badge for a message they never saw and cannot act on.
+      "removedByAdmin.at": { $exists: false },
     });
 
     // Incoming requests awaiting this user's approval.
@@ -623,6 +762,11 @@ export async function chatUnreadCount(req, res) {
     // someone presses Message on a profile, which means an abandoned tap
     // leaves a permanent empty request in the recipient's list. Worth making
     // creation lazy — on first send — or excluding zero-message threads here.
+    //
+    // A request whose only message was removed is now one of those empty
+    // threads, and it still counts. That is arguably right: the recipient is
+    // still being asked to accept or decline a stranger. Revisit alongside the
+    // lazy-creation change, not before — they are the same fix.
     const requestCount = await Conversation.countDocuments({
       participants: me,
       status: "pending",
@@ -656,6 +800,13 @@ export async function markRead(req, res) {
     // Not filtered by hiddenFor: marking a hidden message read is harmless and
     // keeps readBy honest for the sender's future read receipts, if those ever
     // land. The badge already excludes hidden messages at the count.
+    //
+    // Not filtered by removedByAdmin either, on the same reasoning — this is a
+    // WRITE to readBy, not a read of content, and every count that feeds a
+    // badge already excludes removed messages. Adding a filter here would also
+    // leave a removed-then-restored message permanently unread for a recipient
+    // who had the thread open the whole time, which is a worse outcome than a
+    // readBy entry nobody looks at.
     await Message.updateMany(
       { conversation: id, sender: { $ne: me }, readBy: { $ne: me } },
       { $addToSet: { readBy: me } },

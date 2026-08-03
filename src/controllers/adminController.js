@@ -1,4 +1,19 @@
 // localpulse/server/src/controllers/adminController.js
+//
+// Admin/moderation controllers. Every export here is mounted behind
+// requireAdmin in admin.routes.js — there is no per-user authorisation inside
+// these functions, so a route added without that middleware is a full breach,
+// not a bug.
+//
+// Message moderation lives in the back half of this file:
+//   adminGetMessages          — full thread, UNFILTERED, reached from a report
+//   adminListHiddenMessages   — messages a participant hid from their own view
+//   adminRemoveMessage        — sets removedByAdmin (asymmetric, reversible)
+//   adminRestoreMessage       — unsets it
+//
+// See chatController.js for the read side: what removal does to each
+// participant's view, and the three filter sites that enforce it.
+
 import User from "../models/User.js";
 import Match from "../models/Match.js";
 import Swipe from "../models/Swipe.js";
@@ -8,6 +23,62 @@ import Report, { REPORT_STATUS } from "../models/Report.js";
 import mongoose from "mongoose";
 import Message from "../models/Message.js";
 import Conversation from "../models/Conversation.js";
+
+// The acting admin's id, for the removedByAdmin audit trail.
+//
+// Defined here rather than imported from chatController.js on purpose: that
+// module is the participant-facing controller and this one is not, and a
+// cross-import between them is the kind of edge that turns into a cycle the
+// first time either file grows a helper the other wants.
+//
+// The previous version of adminRemoveMessage CALLED this without defining it
+// anywhere in this file, so it threw a ReferenceError on its first line and
+// the catch reported "Could not remove message" — a 500 that looked like a
+// database problem and was not.
+function currentUserId(req) {
+  return String(req.user.id || req.user.sub);
+}
+
+// Recompute a conversation's denormalised preview after a removal or restore.
+//
+// WHY THIS EXISTS: Conversation.lastMessage is written at send time by
+// persistMessage. Nothing else updates it. Without this call, an admin removes
+// a message and the recipient — who can no longer open it, because
+// chatController filters it out of their thread — still reads its full text as
+// the preview on their inbox row, indefinitely, until someone sends again.
+// Removing content from the thread and leaving it on the list that links to
+// the thread is not a partial fix; it is the same exposure through a shorter
+// path.
+//
+// Deliberately only aware of removal, NOT of hiddenFor. lastMessage is a
+// single shared field on the conversation and hiding is per-user, so the two
+// cannot both be honoured in one string. Hiding tolerates the staleness
+// because the other participant never lost anything; removal does not.
+//
+// Empty conversation → empty preview and lastMessageAt pinned to the
+// conversation's own createdAt, so the row sorts to the bottom of the inbox
+// rather than vanishing from a { lastMessageAt: -1 } sort on a null.
+async function recomputeConversationPreview(conversationId) {
+  const convo = await Conversation.findById(conversationId);
+  if (!convo) return;
+
+  const newest = await Message.findOne({
+    conversation: conversationId,
+    "removedByAdmin.at": { $exists: false },
+  })
+    .sort({ createdAt: -1 })
+    .select("text imageUrl createdAt");
+
+  if (newest) {
+    convo.lastMessage = newest.text ? newest.text : "📷";
+    convo.lastMessageAt = newest.createdAt;
+  } else {
+    convo.lastMessage = "";
+    convo.lastMessageAt = convo.createdAt;
+  }
+
+  await convo.save();
+}
 
 // Dashboard counters for the admin analytics view.
 export async function stats(_req, res) {
@@ -58,6 +129,11 @@ export async function stats(_req, res) {
   }
 }
 
+// NOTE: `q` goes straight into RegExp uninterpreted, so an admin can enter a
+// pattern that backtracks badly and stall the request. Admin-only and
+// unchanged from the original — flagged, not fixed, because escaping it would
+// silently remove regex search from anyone currently relying on it. Escape at
+// the same time you decide nobody is.
 export async function listUsers(req, res) {
   try {
     const { q, limit } = req.query;
@@ -102,75 +178,7 @@ export async function setBanned(req, res) {
   }
 }
 
-export async function resolveReport(req, res) {
-  try {
-    const { status } = req.body;
-    if (!REPORT_STATUS.includes(status)) {
-      return res.status(400).json({ error: "Invalid status" });
-    }
-    const report = await Report.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      { new: true },
-    );
-    if (!report) return res.status(404).json({ error: "Report not found" });
-    return res.json({ id: report._id, status: report.status });
-  } catch (err) {
-    console.error("resolveReport error", err);
-    return res.status(500).json({ error: "Could not update report" });
-  }
-}
-
-// ── Post moderation (feed side of the hybrid app) ─────
-export async function listPosts(req, res) {
-  try {
-    const lim = Math.min(Number(req.query.limit) || 50, 100);
-    const posts = await Post.find()
-      .sort({ createdAt: -1 })
-      .limit(lim)
-      .populate("author");
-    return res.json({
-      posts: posts.map((p) => ({
-        ...p.toClient(),
-        author: p.author?.toPublic?.(),
-      })),
-    });
-  } catch (err) {
-    console.error("admin listPosts error", err);
-    return res.status(500).json({ error: "Could not list posts" });
-  }
-}
-
-export async function deletePost(req, res) {
-  try {
-    const post = await Post.findByIdAndDelete(req.params.id);
-    if (!post) return res.status(404).json({ error: "Post not found" });
-    await Comment.deleteMany({ post: post._id });
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error("admin deletePost error", err);
-    return res.status(500).json({ error: "Could not delete post" });
-  }
-}
-
-// localpulse/server/src/controllers/adminController.js
-//
-// ⚠ PARTIAL FILE — two functions only. Do NOT paste this over
-// adminController.js: it would delete stats, listUsers, setBanned, listPosts
-// and deletePost. Replace the existing listReports (lines 90–116) with the one
-// below, and add adminGetMessages after resolveReport.
-//
-// IMPORTS — add these near the existing Report / Post / Comment imports.
-// Check first whether mongoose is already imported; adminGetMessages needs it
-// for isValidObjectId.
-//
-//   import mongoose from "mongoose";
-//   import Message from "../models/Message.js";
-//   import Conversation from "../models/Conversation.js";
-
-// ─────────────────────────────────────────────────────────────────────
-// REPLACES the existing listReports
-// ─────────────────────────────────────────────────────────────────────
+// ── Report queue ──────────────────────────────────────────────────────
 //
 // Message reports carry `message` + `conversation` + `snapshotText`; post
 // reports carry `post`; a bare user report carries neither. All three land in
@@ -206,12 +214,19 @@ export async function listReports(req, res) {
         // from their own view, which is neither an admission nor a defence.
         // The message itself is untouched by hiding, which is why it is still
         // here to read at all.
+        //
+        // removed tells the moderator this queue row has already been acted
+        // on, so two moderators working the queue do not both remove it and
+        // the second does not read the absence of an effect as a broken
+        // button. adminRemoveMessage is idempotent regardless.
         message: r.message
           ? {
               id: r.message._id,
               text: r.snapshotText || r.message.text || "",
               imageUrl: r.message.imageUrl || null,
               hiddenCount: (r.message.hiddenFor || []).length,
+              removed: Boolean(r.message.removedByAdmin?.at),
+              removedAt: r.message.removedByAdmin?.at || null,
               createdAt: r.message.createdAt,
             }
           : null,
@@ -227,20 +242,73 @@ export async function listReports(req, res) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// NEW — add after resolveReport
-// ─────────────────────────────────────────────────────────────────────
+export async function resolveReport(req, res) {
+  try {
+    const { status } = req.body;
+    if (!REPORT_STATUS.includes(status)) {
+      return res.status(400).json({ error: "Invalid status" });
+    }
+    const report = await Report.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true },
+    );
+    if (!report) return res.status(404).json({ error: "Report not found" });
+    return res.json({ id: report._id, status: report.status });
+  } catch (err) {
+    console.error("resolveReport error", err);
+    return res.status(500).json({ error: "Could not update report" });
+  }
+}
+
+// ── Post moderation (feed side of the hybrid app) ─────────────────────
+export async function listPosts(req, res) {
+  try {
+    const lim = Math.min(Number(req.query.limit) || 50, 100);
+    const posts = await Post.find()
+      .sort({ createdAt: -1 })
+      .limit(lim)
+      .populate("author");
+    return res.json({
+      posts: posts.map((p) => ({
+        ...p.toClient(),
+        author: p.author?.toPublic?.(),
+      })),
+    });
+  } catch (err) {
+    console.error("admin listPosts error", err);
+    return res.status(500).json({ error: "Could not list posts" });
+  }
+}
+
+export async function deletePost(req, res) {
+  try {
+    const post = await Post.findByIdAndDelete(req.params.id);
+    if (!post) return res.status(404).json({ error: "Post not found" });
+    await Comment.deleteMany({ post: post._id });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("admin deletePost error", err);
+    return res.status(500).json({ error: "Could not delete post" });
+  }
+}
+
+// ── Full thread for moderation ────────────────────────────────────────
 //
-// Full thread for moderation. A single reported line is usually unjudgeable —
-// whether something counts as harassment depends entirely on what surrounds
-// it — so the queue links here from a report.
+// A single reported line is usually unjudgeable — whether something counts as
+// harassment depends entirely on what surrounds it — so the queue links here
+// from a report.
 //
-// UNFILTERED on purpose. This is the one read path that must NOT apply
-// `hiddenFor: { $ne: me }`. The whole point of hiding being a per-user array
-// rather than a delete is that moderation still sees everything. toAdmin()
-// exists for exactly this: it returns the original text plus who hid it, and
-// is a separate method from toClient() so a participant-facing path cannot
-// serve hidden content by passing the wrong argument.
+// UNFILTERED on purpose, on both axes. It does not apply hiddenFor, because
+// the whole point of hiding being a per-user array rather than a delete is
+// that moderation still sees everything. It does not apply the removal filter
+// either, which is what makes restore reachable: a moderator viewing the
+// thread sees removed messages in place, marked, and can put one back.
+//
+// toAdmin() exists for exactly this. It is a SEPARATE method from
+// toClient(viewerId) so that a participant-facing path cannot serve moderation
+// content by passing the wrong argument — the two cannot be confused at a call
+// site because they do not share a signature.
 //
 // No participant check — requireAdmin is the only gate. That makes this a
 // privileged read of a private conversation, so it should only ever be
@@ -282,23 +350,6 @@ export async function adminGetMessages(req, res) {
   }
 }
 
-// localpulse/server/src/controllers/adminController.js
-//
-// ⚠⚠ PARTIAL FILE — ONE FUNCTION. Do NOT paste this whole file over
-// adminController.js, and do NOT paste this header block into it either. Copy
-// the function below only, and add it after adminGetMessages.
-//
-// (The header from the last partial ended up inside your controller as source,
-// along with a duplicate listReports. Worth deleting lines ~185–195 while you
-// are in here.)
-//
-// Requires the imports the previous partial listed — mongoose, Message,
-// Conversation — which as of the last grep were still missing:
-//
-//   import mongoose from "mongoose";
-//   import Message from "../models/Message.js";
-//   import Conversation from "../models/Conversation.js";
-
 // ── Messages hidden by a participant ──────────────────────────────────
 //
 // "Deleted messages" in the admin UI. Hiding sets hiddenFor; it never modifies
@@ -312,6 +363,11 @@ export async function adminGetMessages(req, res) {
 // interpretive value — a recipient hiding something they were sent reads very
 // differently from a sender tidying up after themselves. Neither is evidence
 // of anything on its own; most hiding is ordinary housekeeping.
+//
+// POPULATE REQUIREMENT: .populate("hiddenFor") throws unless hiddenFor is
+// declared in Message.js as [{ type: ObjectId, ref: "User" }]. A bare
+// [ObjectId] array with no ref is a 500 on this endpoint and nowhere else,
+// because nothing else populates it.
 //
 // No report anchors these reads, unlike adminGetMessages. If that ever becomes
 // uncomfortable, the honest fix is to drop the page rather than to soften it.
@@ -336,11 +392,263 @@ export async function adminListHiddenMessages(req, res) {
         hiddenByUsers: (m.hiddenFor || [])
           .map((u) => u?.toPublic?.() || null)
           .filter(Boolean),
+        // Removal state, so the row can render Remove or Restore rather than
+        // Remove always. Hiding and removal are independent — a message can be
+        // both — and a page that shows only one of them will offer an action
+        // that has already been taken.
+        removed: Boolean(m.removedByAdmin?.at),
+        removedAt: m.removedByAdmin?.at || null,
+        removedReason: m.removedByAdmin?.reason || "",
         createdAt: m.createdAt,
       })),
     });
   } catch (err) {
     console.error("adminListHiddenMessages error", err);
     return res.status(500).json({ error: "Could not load hidden messages" });
+  }
+}
+
+// ── Messages removed by a moderator ───────────────────────────────────
+//
+// The list that makes removal reversible in practice. adminRestoreMessage has
+// existed since the first partial, but nothing could route to it: removed
+// messages appear in adminListHiddenMessages only if a participant ALSO hid
+// them, and in adminGetMessages only if a report happens to point at that
+// conversation. Remove a message outside both cases and it is unreachable —
+// the moderator cannot undo their own action, which quietly turns a reversible
+// tool into a permanent one.
+//
+// Text is returned in full because it is preserved in the database; that is
+// the same property restore depends on. A moderator deciding whether to put a
+// message back has to be able to read it.
+//
+// UNANCHORED, like adminListHiddenMessages — no report gates it. The
+// justification is narrower and better here: every row is content this team
+// already acted on, not private conversation surfaced on a hunch. If the
+// hidden-messages page is ever dropped for that reason, this one survives it.
+//
+// `removedByAdmin.at` existing is the presence test every other query in the
+// system uses, so this list can never disagree with what participants see.
+// It wants an index — { "removedByAdmin.at": -1 } — or this sorts in memory
+// across the whole messages collection.
+//
+// The removing admin is resolved with a second query rather than
+// .populate("removedByAdmin.by"). Populate on a subdocument path throws if the
+// schema declares it without a ref, and that failure mode has already cost two
+// rounds on this feature. A manual lookup does not care how the field is
+// declared.
+export async function adminListRemovedMessages(req, res) {
+  try {
+    const lim = Math.min(Number(req.query.limit) || 100, 200);
+
+    const docs = await Message.find({ "removedByAdmin.at": { $exists: true } })
+      .sort({ "removedByAdmin.at": -1 })
+      .limit(lim)
+      .populate("sender");
+
+    // One query for every distinct moderator in the page, not one per row.
+    const adminIds = [
+      ...new Set(
+        docs
+          .map((m) => m.removedByAdmin?.by)
+          .filter(Boolean)
+          .map((v) => String(v)),
+      ),
+    ];
+    const admins = adminIds.length
+      ? await User.find({ _id: { $in: adminIds } })
+      : [];
+    const adminById = new Map(admins.map((u) => [String(u._id), u]));
+
+    return res.json({
+      messages: docs.map((m) => {
+        const byId = m.removedByAdmin?.by ? String(m.removedByAdmin.by) : null;
+        return {
+          id: String(m._id),
+          conversationId: String(m.conversation),
+          sender: m.sender?.toPublic?.() || null,
+          text: m.text || "",
+          ...(m.imageUrl ? { imageUrl: m.imageUrl } : {}),
+          removedAt: m.removedByAdmin?.at || null,
+          removedReason: m.removedByAdmin?.reason || "",
+          // null when the removing admin's account has since been deleted.
+          // The removal still stands; only the attribution is gone.
+          removedBy: byId ? adminById.get(byId)?.toPublic?.() || null : null,
+          // Hiding and removal are independent, and a message can be both.
+          // Shown so a moderator restoring something understands that a
+          // participant may still not see it afterwards — their own hide
+          // survives the restore, which is correct but surprising.
+          hiddenCount: (m.hiddenFor || []).length,
+          createdAt: m.createdAt,
+        };
+      }),
+    });
+  } catch (err) {
+    console.error("adminListRemovedMessages error", err);
+    return res.status(500).json({ error: "Could not load removed messages" });
+  }
+}
+
+// ── Remove a message (moderator) ──────────────────────────────────────
+//
+// Sets removedByAdmin; the document and its text are untouched, so a restore
+// returns the real message rather than an empty bubble, and a report about it
+// stays actionable.
+//
+// ASYMMETRIC by design. The sender sees a tombstone — removal that the sender
+// cannot perceive teaches nothing and deters nothing. The recipient's thread
+// filters the message out entirely: a "removed by a moderator" placeholder
+// would keep pointing at content they were better off not receiving, every
+// time they scroll past it.
+//
+// Reversible on purpose. Moderators act on incomplete information and reports
+// are sometimes wrong; a one-way action makes a mistake permanent.
+//
+// Worth remembering this is the WEAKEST tool here. If a message was bad enough
+// to remove, the live question is usually whether the account should still be
+// sending messages at all — setBanned is above this in the same controller.
+export async function adminRemoveMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const { id } = req.params;
+    const { reason } = req.body || {};
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: "Invalid message id" });
+    }
+
+    const msg = await Message.findById(id).select(
+      "_id conversation sender removedByAdmin",
+    );
+    if (!msg) return res.status(404).json({ error: "Message not found" });
+
+    // Idempotent. Two moderators working the same queue row must not produce
+    // an error on the second click, and must not overwrite the first one's
+    // name and timestamp in the audit trail.
+    if (msg.removedByAdmin?.at) {
+      return res.json({
+        ok: true,
+        alreadyRemoved: true,
+        messageId: String(msg._id),
+      });
+    }
+
+    await Message.updateOne(
+      { _id: msg._id },
+      {
+        $set: {
+          "removedByAdmin.by": me,
+          "removedByAdmin.at": new Date(),
+          "removedByAdmin.reason":
+            typeof reason === "string" ? reason.slice(0, 500) : "",
+        },
+      },
+    );
+
+    // MUST run after the $set and before the socket emit. See the helper for
+    // why: without it the recipient keeps reading the removed text as their
+    // inbox preview even though the thread no longer contains it.
+    await recomputeConversationPreview(msg.conversation);
+
+    const io = req.app.get("io");
+    if (io) {
+      // Open threads. The payload carries no text — the client decides what to
+      // render from senderId, tombstone if it is theirs and a deletion if it
+      // is not. Putting the branch on the client is what keeps one event able
+      // to serve two different views.
+      io.to(`conversation:${msg.conversation}`).emit("chat:message:removed", {
+        conversationId: String(msg.conversation),
+        messageId: String(msg._id),
+        senderId: String(msg.sender),
+      });
+
+      // Inbox rows and the ✉ badge, for participants who are NOT sitting in
+      // the conversation room. Without this the recipient's unread count still
+      // includes the removed message until they navigate, which reads as a
+      // badge that will not clear — the exact failure the REMOVED_FILTER sites
+      // in chatController exist to prevent, reintroduced by a stale client.
+      const convo = await Conversation.findById(msg.conversation).select(
+        "participants",
+      );
+      (convo?.participants || []).forEach((p) =>
+        io.to(`user:${String(p)}`).emit("chat:notify", {
+          conversationId: String(msg.conversation),
+        }),
+      );
+    }
+
+    return res.json({ ok: true, messageId: String(msg._id) });
+  } catch (err) {
+    console.error("adminRemoveMessage error", err);
+    return res.status(500).json({ error: "Could not remove message" });
+  }
+}
+
+// ── Restore a removed message ─────────────────────────────────────────
+//
+// $unset rather than setting a flag back to false, so the absence of
+// removedByAdmin.at stays the single presence test every query relies on.
+//
+// This also discards who removed it and why. That is a real loss for an audit
+// trail — a moderator cannot later see that this message was removed and put
+// back — and the fix is a separate moderationLog collection rather than
+// keeping a tombstoned field here, because a field that must be absent for the
+// queries to work cannot also be a history.
+//
+// The recipient does NOT get the message back in place silently in an open
+// tab; the socket event tells their client to refetch. Without it they would
+// keep a thread missing a message that exists again.
+export async function adminRestoreMessage(req, res) {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: "Invalid message id" });
+    }
+
+    const msg = await Message.findById(id).select(
+      "_id conversation sender removedByAdmin",
+    );
+    if (!msg) return res.status(404).json({ error: "Message not found" });
+
+    if (!msg.removedByAdmin?.at) {
+      return res.json({
+        ok: true,
+        alreadyRestored: true,
+        messageId: String(msg._id),
+      });
+    }
+
+    await Message.updateOne(
+      { _id: msg._id },
+      { $unset: { removedByAdmin: "" } },
+    );
+
+    // Symmetric with removal: the restored message may be the newest one
+    // again, in which case the preview has to come back too. Skipping this
+    // leaves the inbox row showing an older message than the thread does.
+    await recomputeConversationPreview(msg.conversation);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`conversation:${msg.conversation}`).emit("chat:message:restored", {
+        conversationId: String(msg.conversation),
+        messageId: String(msg._id),
+      });
+
+      const convo = await Conversation.findById(msg.conversation).select(
+        "participants",
+      );
+      (convo?.participants || []).forEach((p) =>
+        io.to(`user:${String(p)}`).emit("chat:notify", {
+          conversationId: String(msg.conversation),
+        }),
+      );
+    }
+
+    return res.json({ ok: true, messageId: String(msg._id) });
+  } catch (err) {
+    console.error("adminRestoreMessage error", err);
+    return res.status(500).json({ error: "Could not restore message" });
   }
 }
