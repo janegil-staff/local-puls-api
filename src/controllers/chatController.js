@@ -107,7 +107,86 @@ async function persistMessage({
 
   return { ok: true, message: payload };
 }
+// localpulse/server/src/controllers/chatController.js
+//
+// ADDITIONS ONLY — paste the function in, then apply the three filter edits
+// below. mongoose, Conversation, Message and currentUserId are all already
+// imported/defined at the top of this file (lines 20–26), so nothing new is
+// needed there.
 
+// ── Hide a single message for the calling user ────────────────────────
+//
+// "Delete for me", not a retraction. $addToSet on hiddenFor; the document is
+// never modified otherwise and never removed.
+//
+// Idempotent: hiding twice is a no-op, so a double-click or a retried request
+// cannot corrupt the array.
+//
+// No socket broadcast, deliberately. The change affects exactly one user's
+// view, and the other participant must NOT be told — an event saying "message
+// hidden" would leak that you removed something, which is precisely what
+// delete-for-me is not. The cost is that a second tab of the same account will
+// not update until it reloads; acceptable for a deliberate manual action.
+//
+// There is NO unhide endpoint. Adding one without a UI listing what you have
+// hidden would make it unreachable, and the client confirms before calling
+// this because of that.
+export async function hideMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ error: "Invalid message id" });
+    }
+
+    const msg = await Message.findById(id).select("_id conversation");
+    if (!msg) return res.status(404).json({ error: "Message not found" });
+
+    // Membership check. Hiding is per-user, but you must be in the thread to
+    // touch anything in it — without this, any id could be probed for
+    // existence by watching 404 vs 200.
+    const convo = await Conversation.findOne({
+      _id: msg.conversation,
+      participants: me,
+    }).select("_id");
+    if (!convo) return res.status(403).json({ error: "Not a participant" });
+
+    await Message.updateOne({ _id: id }, { $addToSet: { hiddenFor: me } });
+
+    return res.json({ ok: true, messageId: String(id) });
+  } catch (err) {
+    console.error("[hideMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to hide message" });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// READ FILTERS — three places, all required
+// ─────────────────────────────────────────────────────────────────────
+//
+// Miss one and a hidden message comes back through a side door. In each of the
+// Message queries below, add:
+//
+//     hiddenFor: { $ne: me },
+//
+// 1. getMessages() — line ~333. The Message.find({ conversation: id, ... }).
+//    Without it the message reappears on reload.
+//
+// 2. chatUnreadCount() — line ~418, the countDocuments over accepted convos
+//    that already filters `sender: { $ne: me }, readBy: { $ne: me }`. Without
+//    it the ✉ badge shows a count for a message the user cannot find, which
+//    reads as a broken badge. This is the one people forget.
+//
+// 3. listConversations() — wherever lastMessage / the inbox preview is
+//    resolved. I have not seen it, so I cannot write the edit: if it is a
+//    populate or a per-convo findOne, add the same filter; if it is an
+//    aggregation, the $match on messages needs `hiddenFor: { $ne: meObjectId }`
+//    with a real ObjectId rather than the string currentUserId() returns.
+//
+// ADMIN read paths must NOT filter, and get the full record automatically as
+// long as they do not copy this. Use message.toAdmin() there — it returns the
+// original text plus hiddenFor, so a moderator sees what was actually sent.
 // ── Send a message (REST) — THE persistence path for web + mobile ─────
 export async function sendMessage(req, res) {
   try {
