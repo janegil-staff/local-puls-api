@@ -34,10 +34,12 @@ export async function setUserRole(req, res) {
     // panel. Self-promotion is impossible anyway (they are already admin), so
     // in practice this blocks self-demotion, which is the lockout case.
     if (String(id) === String(req.userId)) {
-      return res.status(403).json({
-        error: "Cannot change your own role",
-        code: "self_role_change",
-      });
+      return res
+        .status(403)
+        .json({
+          error: "Cannot change your own role",
+          code: "self_role_change",
+        });
     }
 
     const target = await User.findById(id).select("role username");
@@ -81,10 +83,12 @@ export async function setUserRole(req, res) {
     ).select("role username");
 
     if (!updated) {
-      return res.status(409).json({
-        error: "Role changed concurrently, retry",
-        code: "role_conflict",
-      });
+      return res
+        .status(409)
+        .json({
+          error: "Role changed concurrently, retry",
+          code: "role_conflict",
+        });
     }
 
     // Audit last, and never let a logging failure hide a successful change —
