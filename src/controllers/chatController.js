@@ -21,13 +21,20 @@
 // HIDING (hideMessage) is per-user and additive: a user's id goes into the
 // message's hiddenFor array and every participant-facing READ filters on it.
 // It is NOT a retraction — the other side still sees the message, and the
-// document is never modified or removed, so moderation keeps the record. Three
-// read paths filter, and all three are marked HIDDEN_FILTER below. Miss one
-// and a hidden message returns through a side door.
+// document is never modified or removed. Three read paths filter, all marked
+// HIDDEN_FILTER below. Miss one and a hidden message returns through a side
+// door.
+//
+// REPORTING (reportMessage) is what makes hiding defensible. Hide-for-me is
+// only safe because the record survives for moderation; a hidden message is
+// still reportable by the OTHER party, who never lost their copy, and a
+// reported message is untouched by anyone hiding it since hiding never
+// modifies the document.
 
 import mongoose from "mongoose";
 import Conversation, { buildPairKey } from "../models/Conversation.js";
 import Message from "../models/Message.js";
+import Report, { REPORT_REASONS } from "../models/Report.js";
 import { checkPendingRules } from "../lib/pendingGuard.js";
 
 function currentUserId(req) {
@@ -155,6 +162,32 @@ export async function sendMessage(req, res) {
   }
 }
 
+// Shared membership check for the per-message actions below. Returns the
+// message document, or { status, error } to respond with.
+//
+// The 404-before-403 order is deliberate: a non-participant gets 403 for a
+// message that exists and 404 for one that does not, which leaks existence.
+// Both branches return before revealing any content, and the ids are random
+// ObjectIds, so the leak is not worth an extra query to close.
+async function findMessageForParticipant(messageId, userId) {
+  if (!mongoose.isValidObjectId(messageId)) {
+    return { status: 400, error: "Invalid message id" };
+  }
+
+  const msg = await Message.findById(messageId).select(
+    "_id conversation sender text imageUrl",
+  );
+  if (!msg) return { status: 404, error: "Message not found" };
+
+  const convo = await Conversation.findOne({
+    _id: msg.conversation,
+    participants: userId,
+  }).select("_id");
+  if (!convo) return { status: 403, error: "Not a participant" };
+
+  return { msg };
+}
+
 // ── Hide a single message for the calling user ────────────────────────
 //
 // "Delete for me", not a retraction. $addToSet on hiddenFor; the document is
@@ -175,30 +208,98 @@ export async function sendMessage(req, res) {
 export async function hideMessage(req, res) {
   try {
     const me = currentUserId(req);
-    const { id } = req.params;
+    const found = await findMessageForParticipant(req.params.id, me);
+    if (found.error)
+      return res.status(found.status).json({ error: found.error });
 
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ error: "Invalid message id" });
-    }
+    await Message.updateOne(
+      { _id: found.msg._id },
+      { $addToSet: { hiddenFor: me } },
+    );
 
-    const msg = await Message.findById(id).select("_id conversation");
-    if (!msg) return res.status(404).json({ error: "Message not found" });
-
-    // Membership check. Hiding is per-user, but you must be in the thread to
-    // touch anything in it — without this, any id could be probed for
-    // existence by watching 404 vs 200.
-    const convo = await Conversation.findOne({
-      _id: msg.conversation,
-      participants: me,
-    }).select("_id");
-    if (!convo) return res.status(403).json({ error: "Not a participant" });
-
-    await Message.updateOne({ _id: id }, { $addToSet: { hiddenFor: me } });
-
-    return res.json({ ok: true, messageId: String(id) });
+    return res.json({ ok: true, messageId: String(found.msg._id) });
   } catch (err) {
     console.error("[hideMessage] failed:", err);
     return res.status(500).json({ error: "Failed to hide message" });
+  }
+}
+
+// ── Report a single message ───────────────────────────────────────────
+//
+// This is the counterweight to hiding. Hide-for-me is only defensible because
+// the record survives — so the report path must exist, must reach the same
+// moderation queue as post and user reports, and must not be defeatable by
+// the reported party (who cannot touch the other side's copy at all).
+//
+// The report captures snapshotText and conversation alongside the message id:
+// a moderator needs the text as it was reported, and needs the thread around
+// it, because one line lifted out of a conversation is usually unjudgeable.
+//
+// reportedUser is set to the sender so the queue's group-by-user view picks
+// message reports up without any change to its existing queries.
+//
+// Filing twice is a no-op returning 200, not a 409. A duplicate report is a
+// user pressing a button twice, not an error state worth surfacing — and the
+// unique sparse index on { reporter, message } makes that true even under a
+// race.
+//
+// NOT filtered by hiddenFor: you can report a message you have hidden. The
+// two actions are independent, and someone who hides something abusive and
+// then decides to report it must not find the option gone.
+export async function reportMessage(req, res) {
+  try {
+    const me = currentUserId(req);
+    const { reason, note } = req.body || {};
+
+    // Validated here rather than in the route's validate() middleware, whose
+    // schema DSL has no enum support — an unknown reason would otherwise
+    // reach Mongoose and surface as a 500 rather than a 400.
+    if (!REPORT_REASONS.includes(reason)) {
+      return res.status(400).json({ error: "Invalid reason" });
+    }
+
+    const found = await findMessageForParticipant(req.params.id, me);
+    if (found.error)
+      return res.status(found.status).json({ error: found.error });
+
+    const msg = found.msg;
+
+    // Reporting your own message is meaningless and would put a moderator's
+    // time on a complaint with no counterparty.
+    if (String(msg.sender) === me) {
+      return res.status(400).json({ error: "Cannot report your own message" });
+    }
+
+    const existing = await Report.findOne({ reporter: me, message: msg._id });
+    if (existing) {
+      return res.json({
+        ok: true,
+        reportId: String(existing._id),
+        duplicate: true,
+      });
+    }
+
+    const report = await Report.create({
+      reporter: me,
+      message: msg._id,
+      conversation: msg.conversation,
+      reportedUser: msg.sender,
+      snapshotText: msg.text || (msg.imageUrl ? "[image]" : ""),
+      reason,
+      note: typeof note === "string" ? note.slice(0, 500) : "",
+    });
+
+    return res
+      .status(201)
+      .json({ ok: true, reportId: String(report._id), duplicate: false });
+  } catch (err) {
+    // The unique index firing means two requests raced. That is still a
+    // success from the user's point of view.
+    if (err?.code === 11000) {
+      return res.json({ ok: true, duplicate: true });
+    }
+    console.error("[reportMessage] failed:", err);
+    return res.status(500).json({ error: "Failed to report message" });
   }
 }
 

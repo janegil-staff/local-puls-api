@@ -8,6 +8,7 @@ import {
   getMessages,
   sendMessage,
   hideMessage,
+  reportMessage,
   chatUnreadCount,
   markRead,
 } from "../controllers/chatController.js";
@@ -33,15 +34,16 @@ router.post(
 
 router.post("/conversations/:id/read", requireAuth, markRead);
 
-// Per-user hide — "delete for me". Addressed by MESSAGE id, not conversation
-// id, so it sits on its own /messages path rather than nested under
-// /conversations/:id: the client has the message id in hand and would
-// otherwise have to pass the conversation twice. hideMessage() does the
-// membership check itself by looking up the message's conversation.
+// Per-message actions. Addressed by MESSAGE id rather than nested under
+// /conversations/:id — the client has the message id in hand, and both
+// controllers resolve the conversation themselves to run the membership
+// check, so passing it twice would only create a chance to disagree.
 //
-// No validate() — there is no body. The id is validated as an ObjectId in the
-// controller, which also distinguishes 404 (no such message) from 403 (not a
-// participant).
+// Neither uses validate(): hide has no body at all, and report's `reason` is
+// an enum, which this validate() DSL has no vocabulary for. reportMessage
+// checks it against REPORT_REASONS and returns 400, rather than letting an
+// unknown value reach Mongoose and surface as a 500.
 router.post("/messages/:id/hide", requireAuth, hideMessage);
+router.post("/messages/:id/report", requireAuth, reportMessage);
 
 export default router;
