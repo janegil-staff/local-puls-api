@@ -558,6 +558,10 @@ export async function openConversation(req, res) {
     // Fast path: the conversation already exists.
     let convo = await Conversation.findOne({ pairKey });
 
+    // Only a NEWLY created pending thread notifies the recipient. Re-opening
+    // an existing conversation must not fire anything.
+    let created = false;
+
     if (!convo) {
       try {
         convo = await Conversation.create({
@@ -566,6 +570,7 @@ export async function openConversation(req, res) {
           initiator: me,
           status: "pending",
         });
+        created = true;
       } catch (err) {
         // E11000 = another request created it between our findOne and create.
         if (err?.code === 11000) {
@@ -578,6 +583,22 @@ export async function openConversation(req, res) {
 
     if (!convo)
       return res.status(500).json({ error: "Failed to open conversation" });
+
+    // REQUEST_NOTIFY — a request with no message still changes the
+    // recipient's requestCount, and nothing else emits for it. persistMessage
+    // fires chat:notify only when someone actually sends, so without this the
+    // badge does not move until the app next cold-starts and primes.
+    //
+    // chat:notify rather than a new event name: both clients already bind it
+    // and call refreshUnread, so this needs no client change.
+    if (created && convo.status === "pending") {
+      const io = req.app.get("io");
+      if (io) {
+        io.to(`user:${userId}`).emit("chat:notify", {
+          conversationId: String(convo._id),
+        });
+      }
+    }
 
     return res.json({
       conversationId: String(convo._id),
