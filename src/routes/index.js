@@ -16,6 +16,7 @@ import notificationRoutes, { pushRouter } from "./notification.routes.js";
 import adminRoutes from "./admin.routes.js";
 import miscRoutes from "./misc.routes.js";
 import seedRoutes from "./seed.routes.js";
+import callRoutes from "./call.routes.js";
 
 const router = Router();
 
