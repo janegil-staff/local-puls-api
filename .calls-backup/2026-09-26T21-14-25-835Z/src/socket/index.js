@@ -16,7 +16,6 @@ import jwt from "jsonwebtoken";
 import { Server } from "socket.io";
 import Conversation from "../models/Conversation.js";
 import { config } from "../config/index.js";
-import registerCallHandlers from "../sockets/callHandlers.js";
 
 // A user may have several devices connected at once, so events are emitted to
 // a per-user room rather than to a single socket id.
@@ -115,11 +114,6 @@ export function attachSockets(httpServer) {
     const userId = socket.userId;
 
     socket.join(userRoom(userId));
-
-    // 1:1 call signaling (call:invite / accept / offer / answer / ice / end).
-    // Only adds new call:* events — nothing existing changes, so clients that
-    // don't call are unaffected.
-    registerCallHandlers(io, socket);
 
     console.log(
       `[socket] connected ${socket.id} user ${userId}` +

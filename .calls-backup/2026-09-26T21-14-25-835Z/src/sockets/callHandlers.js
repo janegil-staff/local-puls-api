@@ -5,7 +5,6 @@ import Call, { CALL_STATUS, CALL_END_REASON } from "../models/Call.js";
 import Conversation from "../models/Conversation.js";
 import registry from "../services/callRegistry.js";
 import { createIceServers } from "../services/turnService.js";
-import { blockedBetween } from "../lib/blocks.js";
 
 /**
  * WebRTC signaling for 1:1 calls.
@@ -161,10 +160,9 @@ export default function registerCallHandlers(io, socket) {
       );
     }
 
-    // Either side blocked the other → no call. Same helper as the rest of the API.
-    if (await blockedBetween(userId, calleeId)) {
-      return fail(ack, ERRORS.NOT_ALLOWED, "Calls are not available here.");
-    }
+    // TODO(moderation): also reject when either side has blocked the other, or
+    // when the conversation is under moderation hold. Wire to the same helper
+    // the message send path uses.
 
     if (registry.isUserBusy(userId)) {
       return fail(ack, ERRORS.ALREADY_IN_CALL, "You are already in a call.");

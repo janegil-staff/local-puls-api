@@ -33,7 +33,6 @@ router.use("/chat", chatRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/push", pushRouter);
 router.use("/admin", adminRoutes);
-router.use("/calls", callRoutes); // /calls/ice-servers, /calls/recent, ...
 
 if (process.env.ALLOW_SEEDING === "true") {
   router.use("/admin/seed", seedRoutes);
