@@ -9,6 +9,8 @@
 // "is", like any user):
 //   BOT_LAT=59.913 BOT_LNG=10.752 BOT_LOCATION_NAME="Oslo" node scripts/createBot.js
 //
+// Optional: BOT_BIO — profile description (max 300 characters).
+//
 // Optional: BOT_AVATAR_URL — a hosted image for the profile photo. Use a
 // clearly non-human avatar (a robot/logo), not a photo of a person.
 //
@@ -22,6 +24,9 @@ import User, { snapCoords } from "../src/models/User.js";
 import { INTERESTS } from "../src/lib/interests.js";
 
 const USERNAME = process.env.BOT_USERNAME || "pulse_ai";
+
+const DEFAULT_BIO =
+  "🤖 Hi, I'm Pulse AI, the AI here in Qup Pulse. Ask me anything about the app, get tips on what's happening around you, or just chat when you're bored. I love good questions, bad jokes and late-night conversations. Always online, always an AI. ✨";
 
 const PERSONA = `You are Pulse AI, the friendly, witty bot in Qup Pulse.
 You help people get started in the app, suggest fun things to do locally,
@@ -52,8 +57,8 @@ async function main() {
 
   bot.isBot = true;
   bot.displayName = "Pulse AI";
-  bot.bio =
-    "🤖 I'm the Qup Pulse AI bot. Ask me about the app, local tips, or play a game with me!";
+  // Max 300 characters (User.bio). Override without editing: BOT_BIO="..."
+  bot.bio = (process.env.BOT_BIO || DEFAULT_BIO).slice(0, 300);
   bot.gender = "other";
   bot.preferences.show = "everyone";
   bot.emailVerified = true;
