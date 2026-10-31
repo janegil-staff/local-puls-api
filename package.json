@@ -16,7 +16,8 @@
     "seed:up": "node scripts/uploadSeedAssets.js && node scripts/seedDemoData.js && node scripts/seed-comments.js",
     "seed:all": "npm run seed:assets && npm run seed:demo",
     "seed:reset": "npm run seed:down && npm run seed:up",
-    "bot:create": "node scripts/createBot.js"
+    "bot:create": "node scripts/createBot.js",
+    "bot:avatar": "node scripts/generateBotAvatar.js"
   },
   "keywords": [],
   "author": "",
