@@ -1,0 +1,48 @@
+{
+  "name": "local-pulse-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "seed:comments": "node scripts/seed-comments.js",
+    "seed:comments:remove": "node scripts/unseed-comments.js",
+    "seed:assets": "node scripts/uploadSeedAssets.js",
+    "seed:assets:remove": "node scripts/removeSeedAssets.js --confirm",
+    "seed:demo": "node scripts/seedDemoData.js",
+    "seed:demo:remove": "node scripts/removeDemoData.js",
+    "seed:down": "node scripts/removeSeedAssets.js --confirm && node scripts/unseed-comments.js && node scripts/removeDemoData.js",
+    "seed:up": "node scripts/uploadSeedAssets.js && node scripts/seedDemoData.js && node scripts/seed-comments.js",
+    "seed:all": "npm run seed:assets && npm run seed:demo",
+    "seed:reset": "npm run seed:down && npm run seed:up"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "globals": "^17.7.0",
+    "nodemon": "^3.1.14"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1080.0",
+    "bcryptjs": "^3.0.3",
+    "cloudinary": "^2.10.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "expo": "^57.0.10",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.1",
+    "helmet": "^8.2.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.7.4",
+    "morgan": "^1.11.0",
+    "multer": "^2.2.0",
+    "openai": "^6.48.0",
+    "resend": "^6.17.2",
+    "sharp": "^0.35.3",
+    "socket.io": "^4.8.3"
+  }
+}

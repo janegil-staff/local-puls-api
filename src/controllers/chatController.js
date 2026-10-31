@@ -95,6 +95,7 @@ import Conversation, { buildPairKey } from "../models/Conversation.js";
 import Message from "../models/Message.js";
 import Report, { REPORT_REASONS } from "../models/Report.js";
 import { checkPendingRules } from "../lib/pendingGuard.js";
+import { maybeReplyAsBot } from "./botController.js";
 
 function currentUserId(req) {
   return String(req.user.id || req.user.sub);
@@ -222,6 +223,11 @@ async function persistMessage({
         }),
       );
   }
+
+  // If the other participant is Pulse AI, it answers. Fire and forget — the
+  // sender gets their 201 now and the reply arrives over the socket. A no-op
+  // for human-to-human conversations.
+  maybeReplyAsBot({ io, conversationId: convo._id, senderId });
 
   return { ok: true, message: payload };
 }

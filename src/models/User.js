@@ -154,6 +154,17 @@ const userSchema = new mongoose.Schema(
       default: false,
       index: true,
     },
+
+    // ── AI bot ──────────────────────────────────────────
+    // A bot is an ordinary user document — same profile, same discovery card,
+    // same chat — plus this flag. Every public serializer exposes isBot so the
+    // clients can show the "AI" badge; the badge is the user's only way to
+    // know they are not talking to a person, so never drop it from a
+    // serializer that renders a profile or a chat header.
+    isBot: { type: Boolean, default: false, index: true },
+    // The bot's system prompt. select: false so it never rides along on an
+    // ordinary User query — botController selects it explicitly.
+    botPersona: { type: String, default: "", select: false },
   },
   { timestamps: true },
 );
@@ -204,6 +215,9 @@ userSchema.methods.isOnline = function isOnline() {
 // What OTHER users may see of my presence. `?? true` because accounts created
 // before showOnlineStatus existed have it undefined.
 userSchema.methods.visibleOnline = function visibleOnline() {
+  // A bot never opens a socket, so its lastSeenAt never moves — but it does
+  // always answer, so show it as online.
+  if (this.isBot) return true;
   if ((this.showOnlineStatus ?? true) === false) return false;
   return this.isOnline();
 };
@@ -285,6 +299,7 @@ userSchema.methods.toPublic = function toPublic() {
     photos: normalizePhotos(this.photos),
     avatarUrl: primaryUrl(this.photos),
     online: this.visibleOnline(),
+    isBot: Boolean(this.isBot),
     role: this.role,
     language: this.language,
     age: ageFromDob(this.dob),
@@ -315,6 +330,7 @@ userSchema.methods.toCard = function toCard() {
     locationName: this.visibleLocationName(),
     emailVerified: Boolean(this.emailVerified),
     online: this.visibleOnline(),
+    isBot: Boolean(this.isBot),
   };
 };
 

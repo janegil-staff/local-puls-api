@@ -4,6 +4,7 @@ import User, { defaultShowFor } from "../models/User.js";
 import { signToken } from "../middleware/auth.js";
 import bcrypt from "bcryptjs";
 import { sendVerificationEmail, sendPinResetEmail } from "../lib/mail.js";
+import { sendBotWelcome } from "./botController.js";
 
 const RESET_TTL_MS = 10 * 60 * 1000;
 const RESET_MAX_ATTEMPTS = 5;
@@ -236,6 +237,10 @@ export async function register(req, res) {
     // Fire and forget. Mail failures are logged inside sendVerificationEmail;
     // the account exists and the token is returned regardless.
     sendVerificationEmail(user, user.emailVerifyToken);
+
+    // Fire and forget: Pulse AI opens a chat with every new user. Never
+    // throws, and signup does not wait for it.
+    sendBotWelcome({ io: req.app.get("io"), user });
 
     const token = signToken(user._id);
     res.json({

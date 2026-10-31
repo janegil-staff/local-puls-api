@@ -6,6 +6,7 @@ import Conversation from "../models/Conversation.js";
 import registry from "../services/callRegistry.js";
 import { createIceServers } from "../services/turnService.js";
 import { blockedBetween } from "../lib/blocks.js";
+import User from "../models/User.js";
 
 /**
  * WebRTC signaling for 1:1 calls.
@@ -163,6 +164,11 @@ export default function registerCallHandlers(io, socket) {
 
     // Either side blocked the other → no call. Same helper as the rest of the API.
     if (await blockedBetween(userId, calleeId)) {
+      return fail(ack, ERRORS.NOT_ALLOWED, "Calls are not available here.");
+    }
+
+    // Pulse AI has no camera or microphone — a call would just ring forever.
+    if (await User.exists({ _id: calleeId, isBot: true })) {
       return fail(ack, ERRORS.NOT_ALLOWED, "Calls are not available here.");
     }
 
