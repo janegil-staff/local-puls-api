@@ -256,11 +256,14 @@ export async function maybeReplyAsBot({ io, conversationId, senderId }) {
     while (again) {
       busy.get(key).again = false;
 
-      if (io) {
-        io.to(`conversation:${convo._id}`).emit("chat:typing", {
+      // "Typing…" while the AI works. Re-sent every 2.5 s because the clients
+      // hide the dots after a few seconds and a reply can take longer.
+      const typing = () =>
+        io?.to(`conversation:${convo._id}`).emit("chat:typing", {
           userId: String(bot._id),
         });
-      }
+      typing();
+      const typingTimer = setInterval(typing, 2500);
 
       // Same visibility rules as the user's thread: nothing retracted,
       // removed by a moderator, or hidden by the user goes to the model.
@@ -287,7 +290,10 @@ export async function maybeReplyAsBot({ io, conversationId, senderId }) {
       seen = new Set(ordered.map((m) => String(m._id)));
 
       const messages = toModelMessages(ordered, bot._id);
-      if (!messages.length) break;
+      if (!messages.length) {
+        clearInterval(typingTimer);
+        break;
+      }
 
       let text;
       try {
@@ -295,6 +301,8 @@ export async function maybeReplyAsBot({ io, conversationId, senderId }) {
       } catch (err) {
         console.error("[bot] AI call failed:", err?.message || err);
         text = errorText(user.language);
+      } finally {
+        clearInterval(typingTimer);
       }
       if (text?.trim()) {
         await postAsBot({ io, convo, bot, userId: senderId, text });

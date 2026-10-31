@@ -141,6 +141,13 @@ export const getDeck = asyncHandler(async (req, res) => {
         ? Boolean(u.lastSeenAt && now - new Date(u.lastSeenAt).getTime() < ONLINE_MS)
         : false,
     };
+    // Pulse AI: badge flag for the clients, always online, and no age — the
+    // bot's dob is only a schema default, and "Pulse AI, 25" would be a lie.
+    if (u.isBot) {
+      card.isBot = true;
+      card.online = true;
+      card.age = null;
+    }
     // Omit the key entirely rather than sending null. A client that renders
     // `{distanceKm} km` would print "null km"; an absent key is falsy and the
     // row simply doesn't appear.
