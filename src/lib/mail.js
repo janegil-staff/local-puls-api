@@ -14,27 +14,43 @@ if (!resend) {
   console.warn('⚠️  RESEND_API_KEY not set — emails will be logged, not sent');
 }
 
-async function send({ to, subject, html }) {
+async function send({ to, subject, html, text }) {
   if (!resend) {
     console.log(`[mail:noop] to=${to} subject="${subject}"`);
     return;
   }
   try {
-    await resend.emails.send({ from: config.mailFrom, to, subject, html });
+    // The Resend SDK does NOT throw on API errors (unverified domain, bad
+    // key, invalid "from"). It resolves with { data, error }. Checking only
+    // for a throw meant every rejected send vanished without a log line.
+    const { data, error } = await resend.emails.send({
+      from: config.mailFrom, to, subject, html,
+      // A plain-text part alongside the HTML: HTML-only mail scores worse
+      // with spam filters (iCloud in particular).
+      ...(text ? { text } : {}),
+    });
+    if (error) {
+      console.error(
+        `mail send rejected from="${config.mailFrom}" to=${to}:`,
+        error.name ?? '', error.message ?? error,
+      );
+      return;
+    }
+    console.log(`[mail] sent id=${data?.id} to=${to} subject="${subject}"`);
   } catch (err) {
-    // Log and swallow. See the note at the top of this file.
+    // Network failure etc. Log and swallow. See the note at the top of this file.
     console.error('mail send failed', err?.message ?? err);
   }
 }
 
 // VERIFY_URL_CLIENT_DOMAIN_V1 — the link must point at the marketing site
-// (qup.dating), NOT the raw API host. Two reasons:
+// (quppulse.com), NOT the raw API host. Two reasons:
 //   1. Google Safe Browsing flags bare *.ondigitalocean.app subdomains serving
 //      long-hex-token paths from emails — it's the phishing signature. A link
-//      whose domain matches the sending domain (noreply@qup.dating) does not.
+//      whose domain matches the sending domain (noreply@quppulse.com) does not.
 //   2. Clicking an API endpoint dumps raw JSON at the user. The Next page at
-//      /verify calls the endpoint and renders a human-readable result.
-// Requires CLIENT_URL=https://qup.dating in the server env.
+//      /verifyLP (qup-pulse-admin) calls the endpoint and renders a human-readable result.
+// Requires CLIENT_URL=https://quppulse.com in the server env.
 export function verifyUrl(token) {
   const base = (config.clientUrl || '').replace(/\/$/, '');
   return `${base}/verifyLP?token=${encodeURIComponent(token)}`;
@@ -45,12 +61,13 @@ export async function sendVerificationEmail(user, token) {
   const name = user.displayName || user.username;
   await send({
     to: user.email,
-    subject: 'Confirm your email',
+    subject: 'Confirm your email for Qup Pulse',
+    text: `Welcome, ${name}\n\nConfirm your email address to finish setting up your Qup Pulse account:\n${url}\n\nThis link expires in 24 hours. If you didn't create an account, ignore this email.\n`,
     html: `
       <div style="font-family:system-ui,-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:24px">
         <h1 style="font-size:20px;margin:0 0 16px">Welcome, ${escapeHtml(name)}</h1>
         <p style="color:#444;line-height:1.5;margin:0 0 24px">
-          Confirm your email address to finish setting up your LocalPulse account.
+          Confirm your email address to finish setting up your Qup Pulse account.
         </p>
         <a href="${url}"
            style="display:inline-block;background:#3B82C4;color:#fff;text-decoration:none;
@@ -69,7 +86,8 @@ export async function sendPinResetEmail(user, code) {
   const name = user.displayName || user.username;
   await send({
     to: user.email,
-    subject: `${code} is your LocalPulse reset code`,
+    subject: `${code} is your Qup Pulse reset code`,
+    text: `Reset your PIN\n\nHi ${name} — enter this code in the app to choose a new PIN: ${code}\n\nThis code expires in 10 minutes and can be used once. If you didn't ask to reset your PIN, you can ignore this email; your account is unchanged.\n`,
     html: `
       <div style="font-family:system-ui,-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:24px">
         <h1 style="font-size:20px;margin:0 0 16px">Reset your PIN</h1>

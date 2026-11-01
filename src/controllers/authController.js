@@ -319,12 +319,15 @@ export async function verifyEmail(req, res) {
   user.emailVerified = true;
   user.emailVerifyToken = undefined;
   user.emailVerifyExpires = undefined;
-  await user.save(); // in login, register, and GET /api/me
-  res.json({
-    token,
-    user: user.toPublic(),
-    ...user.profileState(), // { profileComplete, missingProfileFields }
-  });
+  // validateBeforeSave: false — same reason as changePin. Legacy documents
+  // carry invalid enum values (e.g. gender: 'man'); a full-document validation
+  // would 500 here and the user would never get verified.
+  await user.save({ validateBeforeSave: false });
+
+  // The web page at /verifyLP only checks res.ok. Don't echo the user or the
+  // (now spent) verify token: this endpoint is unauthenticated, and anyone
+  // holding a forwarded link shouldn't get profile data back.
+  return res.json({ ok: true, emailVerified: true });
 }
 
 // Resend the verification email. Authenticated: the token in the request
